@@ -77,22 +77,37 @@ bool Pty::spawn(const std::wstring& program, const std::wstring& cmdline) {
         close(); return false;
     }
 
-    wchar_t pwshPath[MAX_PATH] = {};
-    GetEnvironmentVariableW(L"LOCALAPPDATA", pwshPath, MAX_PATH);
-    wcscat(pwshPath, L"\\Microsoft\\WindowsApps\\pwsh.exe");
-    WIN32_FIND_DATAW fd;
-    HANDLE hFind = FindFirstFileW(pwshPath, &fd);
-    if (hFind != INVALID_HANDLE_VALUE) {
-        FindClose(hFind);
+    wchar_t shellPath[MAX_PATH] = {};
+
+    if (!program.empty()) {
+        wcscpy(shellPath, program.c_str());
     } else {
-        GetWindowsDirectoryW(pwshPath, MAX_PATH);
-        wcscat(pwshPath, L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        wchar_t pwshPath[MAX_PATH] = {};
+        GetEnvironmentVariableW(L"LOCALAPPDATA", pwshPath, MAX_PATH);
+        wcscat(pwshPath, L"\\Microsoft\\WindowsApps\\pwsh.exe");
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW(pwshPath, &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            FindClose(hFind);
+            wcscpy(shellPath, pwshPath);
+        } else {
+            GetWindowsDirectoryW(pwshPath, MAX_PATH);
+            wcscat(pwshPath, L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+            hFind = FindFirstFileW(pwshPath, &fd);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                FindClose(hFind);
+                wcscpy(shellPath, pwshPath);
+            } else {
+                GetWindowsDirectoryW(shellPath, MAX_PATH);
+                wcscat(shellPath, L"\\System32\\cmd.exe");
+            }
+        }
     }
 
-    ptylog("Shell: %ls\n", pwshPath);
+    ptylog("Shell: %ls\n", shellPath);
 
     PROCESS_INFORMATION pi = {};
-    BOOL result = CreateProcessW(nullptr, pwshPath, nullptr, nullptr,
+    BOOL result = CreateProcessW(nullptr, shellPath, nullptr, nullptr,
         FALSE, EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
         &siEx.StartupInfo, &pi);
 

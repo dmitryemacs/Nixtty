@@ -3,6 +3,7 @@
 #include "terminal.h"
 #include <vector>
 #include <cstdint>
+#include <functional>
 
 class AnsiParser {
 public:
@@ -11,14 +12,13 @@ public:
     void parse(const char* data, size_t len);
     void parse(const wchar_t* data, size_t len);
 
+    std::function<void(const char*, size_t)> onWrite;
+
 private:
     void processChar(wchar_t ch);
-    void processEscapeSequence();
-    void processCsiSequence();
-    void processOscSequence();
-
     void executeCsi();
     void executeSgr();
+    void writeResponse(const char* data, size_t len);
 
     Terminal& m_terminal;
 
@@ -35,8 +35,8 @@ private:
     std::vector<int> m_params;
     int m_currentParam = 0;
     bool m_hasParam = false;
+    bool m_csiPrivate = false;
 
-    // UTF-8 decode state
     int m_utf8Expected = 0;
     uint32_t m_utf8Codepoint = 0;
 };

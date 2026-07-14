@@ -16,6 +16,8 @@ public:
     void shutdown();
 
     void beginFrame(int width, int height);
+    void flushBatches();
+    void present();
     void endFrame();
 
     void drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool bold);
@@ -46,6 +48,20 @@ private:
     int m_atlasTexW = 0;
     int m_atlasTexH = 0;
     static const int ATLAS_COLS = 128;
+
+    struct BgQuad {
+        float x, y, w, h;
+        uint32_t color;
+    };
+    struct GlyphQuad {
+        float x, y, w, h;
+        float u0, v0, u1, v1;
+        uint32_t color;
+    };
+    std::vector<BgQuad> m_bgBatch;
+    std::vector<GlyphQuad> m_glyphBatch;
+    void flushBgBatch();
+    void flushGlyphBatch();
 };
 
 void renderer_set_log_file(FILE* f);

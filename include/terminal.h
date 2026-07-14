@@ -29,6 +29,7 @@ public:
     bool resize(int cols, int rows);
     void clear();
     void scrollUp(int lines = 1);
+    void scrollDown(int lines = 1);
 
     void write(const char* data, size_t len);
     void write(const wchar_t* data, size_t len);
@@ -45,26 +46,39 @@ public:
     void setFgColor(uint32_t color);
     void setBgColor(uint32_t color);
     void setBold(bool b);
+    void setInverse(bool inv);
     void resetAttributes();
 
     void putChar(wchar_t ch);
     void backspace();
     void newline();
+    void reverseIndex();
     void carriageReturn();
     void tab();
 
-    // Erase operations
     void eraseToEndOfLine();
     void eraseToStartOfLine();
     void eraseLine();
     void eraseToEndOfScreen();
     void eraseToStartOfScreen();
     void eraseScreen();
+    void eraseChars(int count);
 
-    // Scroll region
+    void insertLines(int count);
+    void deleteLines(int count);
+    void insertChars(int count);
+    void deleteChars(int count);
+
     void setScrollRegion(int top, int bottom);
 
-    // ANSI support
+    void saveCursor();
+    void restoreCursor();
+
+    void switchToAlternateBuffer();
+    void switchToMainBuffer();
+    bool isAlternateBuffer() const { return m_altScreen; }
+
+    std::function<void(const char*, size_t)> onWrite;
     std::function<void(int, int)> onResize;
 
 private:
@@ -85,6 +99,13 @@ private:
     int m_scrollTop = 0;
     int m_scrollBottom = 0;
 
-    // Saved cursor for ANSI ESC 7 / ESC 8
     Cursor m_savedCursor;
+    int m_savedScrollTop = 0;
+    int m_savedScrollBottom = 0;
+
+    bool m_altScreen = false;
+    std::vector<Cell> m_mainBuffer;
+    Cursor m_mainCursor;
+    int m_mainScrollTop = 0;
+    int m_mainScrollBottom = 0;
 };

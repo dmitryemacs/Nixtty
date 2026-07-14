@@ -12,13 +12,11 @@
 #include <thread>
 #include <atomic>
 
-// ConPTY types for MinGW compatibility
 #ifndef HPCON_DEFINED
 #define HPCON_DEFINED
 typedef VOID* HPCON;
 #endif
 
-// ConPTY function signatures for MinGW
 extern "C" {
     HRESULT WINAPI CreatePseudoConsole(
         COORD size, HANDLE hInput, HANDLE hOutput, DWORD dwFlags, HPCON* phPC

@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 static const wchar_t* FONT_NAMES[] = {
     L"Hack Nerd Font Mono",
@@ -47,10 +48,9 @@ bool Renderer::init(HWND hwnd) {
 
     dbg("GL_VERSION: %s\n", (const char*)glGetString(GL_VERSION));
     dbg("GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
-    dbg("GL_MAX_TEXTURE_SIZE: ");
     GLint maxTex = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
-    dbg("%d\n", maxTex);
+    dbg("GL_MAX_TEXTURE_SIZE: %d\n", maxTex);
 
     if (!createFontAtlas(m_hdc)) {
         dbg("createFontAtlas FAILED\n");
@@ -124,6 +124,10 @@ bool Renderer::createFontAtlas(HDC hdc) {
     for (wchar_t c = 0x2590; c < 0x2600; c++) chars.push_back(c);
     for (wchar_t c = 0x2640; c < 0x2670; c++) chars.push_back(c);
     for (wchar_t c = 0x2700; c < 0x27C0; c++) chars.push_back(c);
+    for (wchar_t c = 0x27C0; c < 0x2800; c++) chars.push_back(c);
+    for (wchar_t c = 0x2800; c < 0x2900; c++) chars.push_back(c);
+    for (wchar_t c = 0x2900; c < 0x2C00; c++) chars.push_back(c);
+    for (wchar_t c = 0x2C00; c < 0x2E80; c++) chars.push_back(c);
 
     int totalChars = (int)chars.size();
     int rows = (totalChars + ATLAS_COLS - 1) / ATLAS_COLS;
@@ -237,13 +241,24 @@ void Renderer::beginFrame(int width, int height) {
     glClearColor(0.102f, 0.106f, 0.149f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, m_fontTexture);
+    m_bgBatch.clear();
+    m_glyphBatch.clear();
+}
+
+void Renderer::flushBatches() {
+    if (!m_initialized) return;
+    flushBgBatch();
+    flushGlyphBatch();
+}
+
+void Renderer::present() {
+    if (!m_initialized) return;
+    SwapBuffers(m_hdc);
 }
 
 void Renderer::endFrame() {
-    if (!m_initialized) return;
-    SwapBuffers(m_hdc);
+    flushBatches();
+    present();
 }
 
 void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool /*bold*/) {
@@ -252,14 +267,7 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
     float w = (float)m_cellWidth;
     float h = (float)m_cellHeight;
 
-    glDisable(GL_TEXTURE_2D);
-    glColor4ub((bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF, 255);
-    glBegin(GL_QUADS);
-        glVertex2f(px, py);
-        glVertex2f(px + w, py);
-        glVertex2f(px + w, py + h);
-        glVertex2f(px, py + h);
-    glEnd();
+    m_bgBatch.push_back({px, py, w, h, bg});
 
     if (ch == L' ' || ch == 0) return;
 
@@ -270,27 +278,51 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
     float cx = px + (w - gi.width) / 2.0f;
     float cy = py + (h - gi.height) / 2.0f;
 
-    glEnable(GL_TEXTURE_2D);
-    glColor4ub((fg >> 16) & 0xFF, (fg >> 8) & 0xFF, fg & 0xFF, 255);
+    m_glyphBatch.push_back({cx, cy, (float)gi.width, (float)gi.height,
+                            gi.u0, gi.v0, gi.u1, gi.v1, fg});
+}
+
+void Renderer::flushBgBatch() {
+    if (m_bgBatch.empty()) return;
+    glDisable(GL_TEXTURE_2D);
     glBegin(GL_QUADS);
-        glTexCoord2f(gi.u0, gi.v0); glVertex2f(cx, cy);
-        glTexCoord2f(gi.u1, gi.v0); glVertex2f(cx + gi.width, cy);
-        glTexCoord2f(gi.u1, gi.v1); glVertex2f(cx + gi.width, cy + gi.height);
-        glTexCoord2f(gi.u0, gi.v1); glVertex2f(cx, cy + gi.height);
+    for (const auto& q : m_bgBatch) {
+        glColor4ub((q.color >> 16) & 0xFF, (q.color >> 8) & 0xFF, q.color & 0xFF, 255);
+        glVertex2f(q.x, q.y);
+        glVertex2f(q.x + q.w, q.y);
+        glVertex2f(q.x + q.w, q.y + q.h);
+        glVertex2f(q.x, q.y + q.h);
+    }
+    glEnd();
+}
+
+void Renderer::flushGlyphBatch() {
+    if (m_glyphBatch.empty()) return;
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, m_fontTexture);
+    glBegin(GL_QUADS);
+    for (const auto& q : m_glyphBatch) {
+        glColor4ub((q.color >> 16) & 0xFF, (q.color >> 8) & 0xFF, q.color & 0xFF, 255);
+        glTexCoord2f(q.u0, q.v0); glVertex2f(q.x, q.y);
+        glTexCoord2f(q.u1, q.v0); glVertex2f(q.x + q.w, q.y);
+        glTexCoord2f(q.u1, q.v1); glVertex2f(q.x + q.w, q.y + q.h);
+        glTexCoord2f(q.u0, q.v1); glVertex2f(q.x, q.y + q.h);
+    }
     glEnd();
 }
 
 void Renderer::drawCursor(int x, int y, int cellW, int cellH, uint32_t color) {
     float px = (float)(x * cellW);
     float py = (float)(y * cellH);
-    float bar = 3.0f;
+    float w = (float)cellW;
+    float h = (float)cellH;
 
     glDisable(GL_TEXTURE_2D);
     glColor4ub((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
     glBegin(GL_QUADS);
-        glVertex2f(px, py + cellH - bar);
-        glVertex2f(px + cellW, py + cellH - bar);
-        glVertex2f(px + cellW, py + cellH);
-        glVertex2f(px, py + cellH);
+        glVertex2f(px, py);
+        glVertex2f(px + w, py);
+        glVertex2f(px + w, py + h);
+        glVertex2f(px, py + h);
     glEnd();
 }

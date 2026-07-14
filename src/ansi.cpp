@@ -1,5 +1,6 @@
 #include "ansi.h"
 #include <algorithm>
+#include <cstdio>
 
 AnsiParser::AnsiParser(Terminal& terminal)
     : m_terminal(terminal)
@@ -15,7 +16,15 @@ void AnsiParser::parse(const char* data, size_t len) {
                 m_utf8Codepoint = (m_utf8Codepoint << 6) | (c & 0x3F);
                 m_utf8Expected--;
                 if (m_utf8Expected == 0) {
-                    processChar(static_cast<wchar_t>(m_utf8Codepoint));
+                    if (m_utf8Codepoint >= 0x10000) {
+                        uint32_t cp = m_utf8Codepoint - 0x10000;
+                        wchar_t high = static_cast<wchar_t>(0xD800 + (cp >> 10));
+                        wchar_t low  = static_cast<wchar_t>(0xDC00 + (cp & 0x3FF));
+                        processChar(high);
+                        processChar(low);
+                    } else {
+                        processChar(static_cast<wchar_t>(m_utf8Codepoint));
+                    }
                 }
             } else {
                 m_utf8Expected = 0;
@@ -51,31 +60,45 @@ void AnsiParser::processChar(wchar_t ch) {
             m_params.clear();
             m_currentParam = 0;
             m_hasParam = false;
-        } else {
-            // Regular character - pass through to terminal
+            m_csiPrivate = false;
+        } else if (ch == L'\r') {
+            m_terminal.carriageReturn();
+        } else if (ch == L'\n') {
+            m_terminal.newline();
+        } else if (ch == L'\t') {
+            m_terminal.tab();
+        } else if (ch == L'\b') {
+            m_terminal.backspace();
+        } else if (ch >= 32) {
             m_terminal.putChar(ch);
         }
         break;
 
     case STATE_ESC:
-        if (ch == L'[' || ch == L's') {
+        if (ch == L'[') {
             m_state = STATE_CSI;
             m_sequence.clear();
             m_params.clear();
             m_currentParam = 0;
             m_hasParam = false;
+            m_csiPrivate = false;
+        } else if (ch == L's') {
+            m_terminal.saveCursor();
+            m_state = STATE_GROUND;
         } else if (ch == L']') {
             m_state = STATE_OSC;
             m_sequence.clear();
         } else if (ch == L'7') {
+            m_terminal.saveCursor();
             m_state = STATE_GROUND;
         } else if (ch == L'8') {
+            m_terminal.restoreCursor();
             m_state = STATE_GROUND;
         } else if (ch == L'D') {
-            m_terminal.moveCursor(0, 1);
+            m_terminal.newline();
             m_state = STATE_GROUND;
         } else if (ch == L'M') {
-            m_terminal.moveCursor(0, -1);
+            m_terminal.reverseIndex();
             m_state = STATE_GROUND;
         } else if (ch == L'c') {
             m_terminal.resetAttributes();
@@ -99,8 +122,10 @@ void AnsiParser::processChar(wchar_t ch) {
             m_params.push_back(m_currentParam);
             m_currentParam = 0;
             m_hasParam = false;
-        } else if (ch == L'?' || ch == L'>' || ch == L'=') {
-            // Intermediate byte (DEC private, etc.) - ignore and continue parsing
+        } else if (ch == L'?') {
+            m_csiPrivate = true;
+        } else if (ch == L'>' || ch == L'=') {
+            // Intermediate byte - ignore and continue
         } else if (ch >= L'@' && ch <= L'~') {
             if (m_hasParam || !m_params.empty()) {
                 m_params.push_back(m_currentParam);
@@ -108,23 +133,27 @@ void AnsiParser::processChar(wchar_t ch) {
             m_sequence.push_back(ch);
             executeCsi();
             m_state = STATE_GROUND;
+            m_csiPrivate = false;
         } else {
             m_state = STATE_GROUND;
+            m_csiPrivate = false;
         }
         break;
 
     case STATE_OSC:
-        // Skip OSC sequences (just consume until BEL or ST)
         if (ch == L'\x07' || ch == L'\x1b') {
             m_state = STATE_GROUND;
         }
         break;
 
     case STATE_ESC_IGNORE:
-        // Consume one character after ESC ( or ESC ) then return to ground
         m_state = STATE_GROUND;
         break;
     }
+}
+
+void AnsiParser::writeResponse(const char* data, size_t len) {
+    if (onWrite) onWrite(data, len);
 }
 
 void AnsiParser::executeCsi() {
@@ -133,49 +162,49 @@ void AnsiParser::executeCsi() {
     wchar_t finalChar = m_sequence.back();
 
     switch (finalChar) {
-    case L'A': { // Cursor Up
+    case L'A': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.moveCursor(0, -n);
         break;
     }
-    case L'B': { // Cursor Down
+    case L'B': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.moveCursor(0, n);
         break;
     }
-    case L'C': { // Cursor Forward
+    case L'C': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.moveCursor(n, 0);
         break;
     }
-    case L'D': { // Cursor Back
+    case L'D': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.moveCursor(-n, 0);
         break;
     }
-    case L'E': { // Cursor Next Line
+    case L'E': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.setCursorPos(0, m_terminal.getCursor().y + n);
         break;
     }
-    case L'F': { // Cursor Previous Line
+    case L'F': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.setCursorPos(0, m_terminal.getCursor().y - n);
         break;
     }
-    case L'G': { // Cursor Horizontal Absolute
+    case L'G': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.setCursorPos(n - 1, m_terminal.getCursor().y);
         break;
     }
-    case L'H': // Cursor Position
+    case L'H':
     case L'f': {
         int row = m_params.size() >= 1 ? m_params[0] : 1;
         int col = m_params.size() >= 2 ? m_params[1] : 1;
         m_terminal.setCursorPos(col - 1, row - 1);
         break;
     }
-    case L'J': { // Erase in Display
+    case L'J': {
         int n = m_params.empty() ? 0 : m_params[0];
         switch (n) {
         case 0: m_terminal.eraseToEndOfScreen(); break;
@@ -185,7 +214,7 @@ void AnsiParser::executeCsi() {
         }
         break;
     }
-    case L'K': { // Erase in Line
+    case L'K': {
         int n = m_params.empty() ? 0 : m_params[0];
         switch (n) {
         case 0: m_terminal.eraseToEndOfLine(); break;
@@ -194,78 +223,114 @@ void AnsiParser::executeCsi() {
         }
         break;
     }
-    case L'L': { // Insert Lines
-        // Not implemented yet
+    case L'L': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.insertLines(n);
         break;
     }
-    case L'M': { // Delete Lines
-        // Not implemented yet
+    case L'M': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.deleteLines(n);
         break;
     }
-    case L'P': { // Delete Characters
-        // Not implemented yet
+    case L'P': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.deleteChars(n);
         break;
     }
-    case L'X': { // Erase Characters
-        // Not implemented yet
+    case L'X': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.eraseChars(n);
         break;
     }
-    case L'S': { // Scroll Up
+    case L'S': {
         int n = m_params.empty() ? 1 : m_params[0];
         m_terminal.scrollUp(n);
         break;
     }
-    case L'T': { // Scroll Down
-        // Not implemented yet
+    case L'T': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.scrollDown(n);
         break;
     }
-    case L'@': { // Insert Characters
-        // Not implemented yet
+    case L'@': {
+        int n = m_params.empty() ? 1 : m_params[0];
+        m_terminal.insertChars(n);
         break;
     }
-    case L'm': { // SGR - Select Graphic Rendition
+    case L'm': {
         executeSgr();
         break;
     }
-    case L'r': { // Set Scroll Region
+    case L'r': {
         int top = m_params.size() >= 1 ? m_params[0] - 1 : 0;
         int bottom = m_params.size() >= 2 ? m_params[1] - 1 : m_terminal.getRows() - 1;
         m_terminal.setScrollRegion(top, bottom);
         break;
     }
-    case L'h': { // Set Mode
-        // Ignore for now (DECSET)
+    case L'h': {
+        if (m_csiPrivate) {
+            for (int p : m_params) {
+                switch (p) {
+                case 25: m_terminal.setCursorVisible(true); break;
+                case 47:
+                case 1047: m_terminal.switchToAlternateBuffer(); break;
+                case 1048: m_terminal.saveCursor(); break;
+                case 1049:
+                    m_terminal.saveCursor();
+                    m_terminal.switchToAlternateBuffer();
+                    break;
+                }
+            }
+        }
         break;
     }
-    case L'l': { // Reset Mode
-        // Ignore for now (DECRST)
+    case L'l': {
+        if (m_csiPrivate) {
+            for (int p : m_params) {
+                switch (p) {
+                case 25: m_terminal.setCursorVisible(false); break;
+                case 47:
+                case 1047: m_terminal.switchToMainBuffer(); break;
+                case 1048: m_terminal.restoreCursor(); break;
+                case 1049:
+                    m_terminal.switchToMainBuffer();
+                    m_terminal.restoreCursor();
+                    break;
+                }
+            }
+        }
         break;
     }
-    case L'n': { // Device Status Report
-        // Not implemented yet
+    case L'n': {
+        if (!m_params.empty() && m_params[0] == 6) {
+            Cursor cur = m_terminal.getCursor();
+            char buf[32];
+            int len = snprintf(buf, sizeof(buf), "\x1b[%d;%dR", cur.y + 1, cur.x + 1);
+            writeResponse(buf, len);
+        }
         break;
     }
     }
 }
 
-// Standard ANSI 16 colors
 static const uint32_t ANSI_COLORS[] = {
-    0x1A1B26, // Black
-    0xF7768E, // Red
-    0x9ECE6A, // Green
-    0xE0AF68, // Yellow
-    0x7AA2F7, // Blue
-    0xBB9AF7, // Magenta
-    0x7DCFFF, // Cyan
-    0xA9B1D6, // White
-    0x414868, // Bright Black
-    0xF7768E, // Bright Red
-    0x9ECE6A, // Bright Green
-    0xE0AF68, // Bright Yellow
-    0x7AA2F7, // Bright Blue
-    0xBB9AF7, // Bright Magenta
-    0x7DCFFF, // Bright Cyan
-    0xC0CAF5, // Bright White
+    0x1A1B26,
+    0xF7768E,
+    0x9ECE6A,
+    0xE0AF68,
+    0x7AA2F7,
+    0xBB9AF7,
+    0x7DCFFF,
+    0xA9B1D6,
+    0x414868,
+    0xF7768E,
+    0x9ECE6A,
+    0xE0AF68,
+    0x7AA2F7,
+    0xBB9AF7,
+    0x7DCFFF,
+    0xC0CAF5,
 };
 
 void AnsiParser::executeSgr() {
@@ -283,24 +348,22 @@ void AnsiParser::executeSgr() {
         } else if (code == 1) {
             m_terminal.setBold(true);
         } else if (code == 2) {
-            // Faint - treat as reset bold
             m_terminal.setBold(false);
         } else if (code == 7) {
-            // Inverse - TODO
+            m_terminal.setInverse(true);
         } else if (code == 22) {
             m_terminal.setBold(false);
+        } else if (code == 27) {
+            m_terminal.setInverse(false);
         } else if (code >= 30 && code <= 37) {
             m_terminal.setFgColor(ANSI_COLORS[code - 30]);
         } else if (code == 38) {
-            // Extended foreground color
             if (i + 1 < m_params.size()) {
                 if (m_params[i + 1] == 5 && i + 2 < m_params.size()) {
-                    // 256-color: \e[38;5;Nm
                     int colorIdx = m_params[i + 2];
                     if (colorIdx < 16) {
                         m_terminal.setFgColor(ANSI_COLORS[colorIdx]);
                     } else if (colorIdx < 232) {
-                        // 6x6x6 color cube
                         int idx = colorIdx - 16;
                         int b = idx % 6; idx /= 6;
                         int g = idx % 6; idx /= 6;
@@ -311,13 +374,11 @@ void AnsiParser::executeSgr() {
                             (b == 0 ? 0x55 : b * 40 + 55)
                         );
                     } else if (colorIdx < 256) {
-                        // Grayscale ramp
                         int gray = (colorIdx - 232) * 10 + 8;
                         m_terminal.setFgColor((gray << 16) | (gray << 8) | gray);
                     }
                     i += 2;
                 } else if (m_params[i + 1] == 2 && i + 3 < m_params.size()) {
-                    // True color: \e[38;2;R;G;Bm
                     uint32_t r = m_params[i + 2];
                     uint32_t g = m_params[i + 3];
                     uint32_t b = m_params[i + 4];
@@ -326,11 +387,10 @@ void AnsiParser::executeSgr() {
                 }
             }
         } else if (code == 39) {
-            m_terminal.setFgColor(0xA9B1D6); // Default fg
+            m_terminal.setFgColor(0xA9B1D6);
         } else if (code >= 40 && code <= 47) {
             m_terminal.setBgColor(ANSI_COLORS[code - 40]);
         } else if (code == 48) {
-            // Extended background color
             if (i + 1 < m_params.size()) {
                 if (m_params[i + 1] == 5 && i + 2 < m_params.size()) {
                     int colorIdx = m_params[i + 2];
@@ -360,7 +420,7 @@ void AnsiParser::executeSgr() {
                 }
             }
         } else if (code == 49) {
-            m_terminal.setBgColor(0x1A1B26); // Default bg
+            m_terminal.setBgColor(0x1A1B26);
         }
 
         i++;
