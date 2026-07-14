@@ -11,6 +11,7 @@
 #include "renderer.h"
 #include "pty.h"
 #include "ansi.h"
+#include "config.h"
 
 static const int DEFAULT_COLS = 80;
 static const int DEFAULT_ROWS = 24;
@@ -23,6 +24,7 @@ static std::mutex g_lock;
 static GLFWwindow* g_window = nullptr;
 static FILE* g_log = nullptr;
 static int g_paintCount = 0;
+static Config g_config;
 
 struct Selection {
     int startX = -1, startY = -1;
@@ -523,6 +525,21 @@ int main(int argc, char* argv[]) {
     if (!glfwInit()) {
         log("GLFW init failed\n");
         return 1;
+    }
+
+    // Load config from ~/.config/nixtty/config.toml
+    std::string configPath;
+    const char* home = getenv("HOME");
+    if (home) {
+        configPath = std::string(home) + "/.config/nixtty/config.toml";
+        if (g_config.loadFromFile(configPath)) {
+            log("Loaded config from %s\n", configPath.c_str());
+        } else {
+            // Try local config.toml
+            if (g_config.loadFromFile("config.toml")) {
+                log("Loaded config from config.toml\n");
+            }
+        }
     }
 
     // Request OpenGL 2.1 (compatible with legacy profile for GL 1.1 calls)

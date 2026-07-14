@@ -11,6 +11,7 @@ set(COMMON_SOURCES
     src/terminal.cpp
     src/renderer.cpp
     src/ansi.cpp
+    src/config.cpp
 )
 
 if(APPLE)
