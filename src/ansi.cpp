@@ -280,6 +280,10 @@ void AnsiParser::executeCsi() {
                     m_terminal.saveCursor();
                     m_terminal.switchToAlternateBuffer();
                     break;
+                case 1000: m_terminal.setMode(1000, true); break;
+                case 1002: m_terminal.setMode(1002, true); break;
+                case 1006: m_terminal.setMode(1006, true); break;
+                case 2004: m_terminal.setMode(2004, true); break;
                 }
             }
         }
@@ -297,6 +301,10 @@ void AnsiParser::executeCsi() {
                     m_terminal.switchToMainBuffer();
                     m_terminal.restoreCursor();
                     break;
+                case 1000: m_terminal.setMode(1000, false); break;
+                case 1002: m_terminal.setMode(1002, false); break;
+                case 1006: m_terminal.setMode(1006, false); break;
+                case 2004: m_terminal.setMode(2004, false); break;
                 }
             }
         }

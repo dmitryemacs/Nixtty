@@ -109,6 +109,43 @@ static void mouseToCell(double mx, double my, int& cx, int& cy) {
     cy = std::clamp(cy, 0, g_terminal->getRows() - 1);
 }
 
+static void sendMouseEvent(int cx, int cy, int button, int action) {
+    if (!g_pty || !g_terminal || !g_terminal->isMouseTracking()) return;
+
+    // Don't send events if cursor position is out of range
+    if (cx < 0 || cy < 0 || cx >= g_terminal->getCols() || cy >= g_terminal->getRows()) return;
+
+    // Button encoding: 0=left, 1=middle, 2=right, 3=release (X10)
+    int btn = button;
+    if (action == GLFW_RELEASE) btn = 3;
+
+    if (g_terminal->isMouseSGRMode()) {
+        // SGR mode: ESC[<button;col;row;M press, ESC[<button;col;row;m release
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                          btn, cx + 1, cy + 1,
+                          action == GLFW_RELEASE ? 'm' : 'M');
+        g_pty->write(buf, len);
+    } else {
+        // Normal mode: ESC[M button col row (limited to 223)
+        char buf[6];
+        buf[0] = '\x1b';
+        buf[1] = '[';
+        buf[2] = 'M';
+        buf[3] = (char)(btn + 32);
+        buf[4] = (char)(cx + 33);
+        buf[5] = (char)(cy + 33);
+        g_pty->write(buf, 6);
+    }
+}
+
+static void sendMouseButtonEvent(int cx, int cy, int glfwButton, int action) {
+    int btn = 0;
+    if (glfwButton == GLFW_MOUSE_BUTTON_MIDDLE) btn = 1;
+    else if (glfwButton == GLFW_MOUSE_BUTTON_RIGHT) btn = 2;
+    sendMouseEvent(cx, cy, btn, action);
+}
+
 static std::string getSelectedText() {
     if (!g_sel.hasSelection()) return {};
     std::lock_guard<std::mutex> lock(g_lock);
@@ -182,7 +219,13 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
     if (super && key == GLFW_KEY_V) {
         const char* clip = glfwGetClipboardString(window);
         if (clip) {
-            g_pty->write(clip, strlen(clip));
+            if (g_terminal->isBracketedPaste()) {
+                g_pty->write("\x1b[200~", 6);
+                g_pty->write(clip, strlen(clip));
+                g_pty->write("\x1b[201~", 6);
+            } else {
+                g_pty->write(clip, strlen(clip));
+            }
         }
         return;
     }
@@ -313,14 +356,24 @@ static void charCallback(GLFWwindow* window, unsigned int codepoint) {
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     if (!g_renderer || !g_terminal) return;
 
+    double mx, my;
+    glfwGetCursorPos(window, &mx, &my);
+    int cx, cy;
+    mouseToCell(mx, my, cx, cy);
+
+    // Send mouse event if tracking is enabled
+    if (g_terminal->isMouseTracking()) {
+        sendMouseButtonEvent(cx, cy, button, action);
+        return;
+    }
+
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
-            double mx, my;
-            glfwGetCursorPos(window, &mx, &my);
             g_sel.clear();
-            mouseToCell(mx, my, g_sel.startX, g_sel.startY);
-            g_sel.endX = g_sel.startX;
-            g_sel.endY = g_sel.startY;
+            g_sel.startX = cx;
+            g_sel.startY = cy;
+            g_sel.endX = cx;
+            g_sel.endY = cy;
             g_sel.selecting = true;
         } else if (action == GLFW_RELEASE) {
             if (g_sel.selecting) {
@@ -333,12 +386,22 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
 }
 
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
-    if (!g_sel.selecting || !g_renderer || !g_terminal) return;
+    if (!g_renderer || !g_terminal) return;
+
     int cx, cy;
     mouseToCell(xpos, ypos, cx, cy);
-    if (cx != g_sel.endX || cy != g_sel.endY) {
-        g_sel.endX = cx;
-        g_sel.endY = cy;
+
+    // Send mouse movement event if button-event tracking is enabled
+    if (g_terminal->isMouseTracking() && g_sel.selecting) {
+        // During selection, don't send movement events
+        return;
+    }
+
+    if (g_sel.selecting) {
+        if (cx != g_sel.endX || cy != g_sel.endY) {
+            g_sel.endX = cx;
+            g_sel.endY = cy;
+        }
     }
 }
 
@@ -359,12 +422,25 @@ static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
             g_terminal->scrollForward(count);
         }
     } else {
-        if (g_terminal->isScrolledBack()) {
-            std::lock_guard<std::mutex> lock(g_lock);
-            g_terminal->scrollToBottom();
+        // Send scroll events if tracking is enabled
+        if (g_terminal->isMouseTracking()) {
+            double mx, my;
+            glfwGetCursorPos(window, &mx, &my);
+            int cx, cy;
+            mouseToCell(mx, my, cx, cy);
+            // Scroll up = button 64, scroll down = button 65
+            int btn = (yoffset > 0) ? 64 : 65;
+            for (int i = 0; i < count; i++) {
+                sendMouseEvent(cx, cy, btn, GLFW_PRESS);
+            }
+        } else {
+            if (g_terminal->isScrolledBack()) {
+                std::lock_guard<std::mutex> lock(g_lock);
+                g_terminal->scrollToBottom();
+            }
+            const char* seq = (yoffset > 0) ? "\x1b[5~" : "\x1b[6~";
+            for (int i = 0; i < count; i++) g_pty->write(seq, 4);
         }
-        const char* seq = (yoffset > 0) ? "\x1b[5~" : "\x1b[6~";
-        for (int i = 0; i < count; i++) g_pty->write(seq, 4);
     }
 }
 

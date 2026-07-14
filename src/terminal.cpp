@@ -394,3 +394,22 @@ const std::vector<Cell>* Terminal::getScrollbackLine(int index) const {
     if (index < 0 || index >= (int)m_scrollback.size()) return nullptr;
     return &m_scrollback[index];
 }
+
+void Terminal::setMode(int mode, bool enabled) {
+    switch (mode) {
+        case 1000: m_mode1000 = enabled; break;
+        case 1002: m_mode1002 = enabled; break;
+        case 1006: m_mode1006 = enabled; break;
+        case 2004: m_mode2004 = enabled; break;
+    }
+}
+
+bool Terminal::getMode(int mode) const {
+    switch (mode) {
+        case 1000: return m_mode1000;
+        case 1002: return m_mode1002;
+        case 1006: return m_mode1006;
+        case 2004: return m_mode2004;
+        default: return false;
+    }
+}

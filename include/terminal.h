@@ -78,6 +78,15 @@ public:
     void switchToMainBuffer();
     bool isAlternateBuffer() const { return m_altScreen; }
 
+    // Terminal modes
+    void setMode(int mode, bool enabled);
+    bool getMode(int mode) const;
+
+    // Mouse tracking
+    bool isMouseTracking() const { return m_mode1000 || m_mode1002; }
+    bool isMouseSGRMode() const { return m_mode1006; }
+    bool isBracketedPaste() const { return m_mode2004; }
+
     // Scrollback
     int getScrollbackLines() const { return (int)m_scrollback.size(); }
     const std::vector<Cell>* getScrollbackLine(int index) const;
@@ -124,4 +133,10 @@ private:
     int m_scrollOffset = 0; // 0 = at bottom, >0 = scrolled back
 
     void pushToScrollback(const std::vector<Cell>& line);
+
+    // Terminal modes
+    bool m_mode1000 = false; // Mouse tracking (X10)
+    bool m_mode1002 = false; // Mouse tracking (button-event)
+    bool m_mode1006 = false; // Mouse SGR encoding
+    bool m_mode2004 = false; // Bracketed paste
 };
