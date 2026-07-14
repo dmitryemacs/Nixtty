@@ -607,10 +607,11 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH, int fontSty
         }
 
         // Compute glyph bounds in atlas pixel coords
+        // Core Text bearingY = offset from baseline to BOTTOM of glyph bbox (y-up)
         double renderX = (gw - rg.adv) / 2.0;
         double glyphLeft = renderX + rg.bearingX;
-        double glyphTop = baselineY + rg.bearingY;
-        double glyphBottom = glyphTop - rg.bbH;
+        double glyphBottom = baselineY + rg.bearingY;
+        double glyphTop = glyphBottom + rg.bbH;
         double glyphRight = glyphLeft + rg.bbW;
 
         // Clamp to atlas cell bounds
@@ -627,7 +628,7 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH, int fontSty
         gi.width = (float)rg.bbW / scaleFactor;
         gi.height = (float)rg.bbH / scaleFactor;
         gi.bearX = (float)(renderX + rg.bearingX) / scaleFactor;
-        gi.bearY = (float)(rg.bearingY) / scaleFactor;
+        gi.bearY = (float)(baselineY + rg.bearingY) / scaleFactor;
         gi.glyphW = (float)rg.bbW / scaleFactor;
         gi.glyphH = (float)rg.bbH / scaleFactor;
         m_glyphs[fontStyle][rg.ch] = gi;
