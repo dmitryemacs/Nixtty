@@ -592,7 +592,7 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH, int fontSty
         for (int srcY = 0; srcY < gh && (py + srcY) < m_atlasTexH; srcY++) {
             for (int srcX = 0; srcX < gw && (px + srcX) < m_atlasTexW; srcX++) {
                 int srcIdx = (srcY * gw + srcX) * 4;
-                int dstIdx = ((py + srcY) * m_atlasTexW + (px + srcX)) * 4;
+                int dstIdx = ((py + gh - 1 - srcY) * m_atlasTexW + (px + srcX)) * 4;
                 uint8_t r = glyphBitmap[srcIdx + 0];
                 uint8_t g = glyphBitmap[srcIdx + 1];
                 uint8_t b = glyphBitmap[srcIdx + 2];
