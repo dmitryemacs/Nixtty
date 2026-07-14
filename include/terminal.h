@@ -78,6 +78,15 @@ public:
     void switchToMainBuffer();
     bool isAlternateBuffer() const { return m_altScreen; }
 
+    // Scrollback
+    int getScrollbackLines() const { return (int)m_scrollback.size(); }
+    const std::vector<Cell>* getScrollbackLine(int index) const;
+    void scrollBack(int lines = 1);
+    void scrollForward(int lines = 1);
+    void scrollToBottom();
+    bool isScrolledBack() const { return m_scrollOffset > 0; }
+    int getScrollOffset() const { return m_scrollOffset; }
+
     std::function<void(const char*, size_t)> onWrite;
     std::function<void(int, int)> onResize;
 
@@ -108,4 +117,11 @@ private:
     Cursor m_mainCursor;
     int m_mainScrollTop = 0;
     int m_mainScrollBottom = 0;
+
+    // Scrollback buffer
+    static const int SCROLLBACK_LIMIT = 10000;
+    std::vector<std::vector<Cell>> m_scrollback;
+    int m_scrollOffset = 0; // 0 = at bottom, >0 = scrolled back
+
+    void pushToScrollback(const std::vector<Cell>& line);
 };

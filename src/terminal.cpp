@@ -50,6 +50,19 @@ void Terminal::clear() {
 void Terminal::scrollUp(int lines) {
     if (lines <= 0) return;
     lines = std::min(lines, m_scrollBottom - m_scrollTop + 1);
+
+    // Push scrolled-off lines to scrollback (only when scrolling the full screen)
+    if (m_scrollTop == 0 && !m_altScreen) {
+        for (int i = 0; i < lines; i++) {
+            int srcY = m_scrollTop + i;
+            std::vector<Cell> line(m_cols);
+            for (int x = 0; x < m_cols; x++) {
+                line[x] = cellAt(x, srcY);
+            }
+            pushToScrollback(line);
+        }
+    }
+
     int rowsToMove = m_scrollBottom - m_scrollTop - lines + 1;
     if (rowsToMove > 0) {
         std::memmove(&cellAt(m_scrollTop, 0), &cellAt(m_scrollTop, lines),
@@ -352,4 +365,32 @@ const Cell& Terminal::cellAt(int x, int y) const {
 
 void Terminal::ensureCapacity() {
     m_buffer.resize(m_cols * m_rows);
+}
+
+void Terminal::pushToScrollback(const std::vector<Cell>& line) {
+    m_scrollback.push_back(line);
+    if ((int)m_scrollback.size() > SCROLLBACK_LIMIT) {
+        m_scrollback.erase(m_scrollback.begin());
+    }
+}
+
+void Terminal::scrollBack(int lines) {
+    lines = std::min(lines, (int)m_scrollback.size() - m_scrollOffset);
+    if (lines <= 0) return;
+    m_scrollOffset += lines;
+}
+
+void Terminal::scrollForward(int lines) {
+    lines = std::min(lines, m_scrollOffset);
+    if (lines <= 0) return;
+    m_scrollOffset -= lines;
+}
+
+void Terminal::scrollToBottom() {
+    m_scrollOffset = 0;
+}
+
+const std::vector<Cell>* Terminal::getScrollbackLine(int index) const {
+    if (index < 0 || index >= (int)m_scrollback.size()) return nullptr;
+    return &m_scrollback[index];
 }

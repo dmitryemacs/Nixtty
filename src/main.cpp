@@ -343,11 +343,29 @@ static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
-    if (!g_pty) return;
-    const char* seq = (yoffset > 0) ? "\x1b[5~" : "\x1b[6~";
+    if (!g_pty || !g_terminal) return;
     int count = abs((int)yoffset);
     if (count == 0) count = 1;
-    for (int i = 0; i < count; i++) g_pty->write(seq, 4);
+
+    int shiftState = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT);
+    int shiftState2 = glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT);
+    bool shift = (shiftState == GLFW_PRESS) || (shiftState2 == GLFW_PRESS);
+
+    if (shift) {
+        std::lock_guard<std::mutex> lock(g_lock);
+        if (yoffset > 0) {
+            g_terminal->scrollBack(count);
+        } else {
+            g_terminal->scrollForward(count);
+        }
+    } else {
+        if (g_terminal->isScrolledBack()) {
+            std::lock_guard<std::mutex> lock(g_lock);
+            g_terminal->scrollToBottom();
+        }
+        const char* seq = (yoffset > 0) ? "\x1b[5~" : "\x1b[6~";
+        for (int i = 0; i < count; i++) g_pty->write(seq, 4);
+    }
 }
 
 static void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
@@ -370,18 +388,44 @@ static void windowRefreshCallback(GLFWwindow* window) {
 
     {
         std::lock_guard<std::mutex> lock(g_lock);
-        const Cell* buf = g_terminal->getBuffer();
         int cols = g_terminal->getCols();
         int rows = g_terminal->getRows();
-        Cursor cur = g_terminal->getCursor();
+        int scrollOffset = g_terminal->getScrollOffset();
+        int scrollbackLines = g_terminal->getScrollbackLines();
 
-        for (int y = 0; y < rows; y++)
-            for (int x = 0; x < cols; x++) {
-                uint32_t bg = buf[y * cols + x].bg;
-                if (g_sel.isSelected(x, y))
-                    bg = 0x4D6299;
-                g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold);
+        if (scrollOffset > 0 && scrollbackLines > 0) {
+            // Scrolled back: show scrollback lines at top, current buffer at bottom
+            int visibleScrollback = std::min(scrollOffset, rows);
+            int bufferRows = rows - visibleScrollback;
+
+            // Draw scrollback lines
+            for (int y = 0; y < visibleScrollback; y++) {
+                int srcIdx = scrollbackLines - scrollOffset + y;
+                const std::vector<Cell>* line = g_terminal->getScrollbackLine(srcIdx);
+                if (!line) continue;
+                for (int x = 0; x < cols && x < (int)line->size(); x++) {
+                    g_renderer->drawCell(x, y, (*line)[x].ch, (*line)[x].fg, (*line)[x].bg, (*line)[x].bold);
+                }
             }
+
+            // Draw current buffer (shifted down)
+            const Cell* buf = g_terminal->getBuffer();
+            for (int y = 0; y < bufferRows; y++)
+                for (int x = 0; x < cols; x++) {
+                    int dstY = visibleScrollback + y;
+                    g_renderer->drawCell(x, dstY, buf[y * cols + x].ch, buf[y * cols + x].fg, buf[y * cols + x].bg, buf[y * cols + x].bold);
+                }
+        } else {
+            // Normal view
+            const Cell* buf = g_terminal->getBuffer();
+            for (int y = 0; y < rows; y++)
+                for (int x = 0; x < cols; x++) {
+                    uint32_t bg = buf[y * cols + x].bg;
+                    if (g_sel.isSelected(x, y))
+                        bg = 0x4D6299;
+                    g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold);
+                }
+        }
     }
 
     g_renderer->flushBatches();
