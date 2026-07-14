@@ -1,9 +1,9 @@
 #pragma once
 
-#include <windows.h>
+#include <cstdint>
+#include <cwchar>
 #include <string>
 #include <vector>
-#include <cstdint>
 #include <functional>
 
 struct Cell {
