@@ -50,6 +50,19 @@ void Terminal::clear() {
 void Terminal::scrollUp(int lines) {
     if (lines <= 0) return;
     lines = std::min(lines, m_scrollBottom - m_scrollTop + 1);
+
+    // Push scrolled-off lines to scrollback (only when scrolling the full screen)
+    if (m_scrollTop == 0 && !m_altScreen) {
+        for (int i = 0; i < lines; i++) {
+            int srcY = m_scrollTop + i;
+            std::vector<Cell> line(m_cols);
+            for (int x = 0; x < m_cols; x++) {
+                line[x] = cellAt(x, srcY);
+            }
+            pushToScrollback(line);
+        }
+    }
+
     int rowsToMove = m_scrollBottom - m_scrollTop - lines + 1;
     if (rowsToMove > 0) {
         std::memmove(&cellAt(m_scrollTop, 0), &cellAt(m_scrollTop, lines),
@@ -131,6 +144,7 @@ void Terminal::putChar(wchar_t ch) {
     c.fg = m_inverse ? m_currentBg : m_currentFg;
     c.bg = m_inverse ? m_currentFg : m_currentBg;
     c.bold = m_bold;
+    c.italic = m_italic;
     c.inverse = m_inverse;
 
     m_cursor.x++;
@@ -297,6 +311,10 @@ void Terminal::setBold(bool b) {
     m_bold = b;
 }
 
+void Terminal::setItalic(bool i) {
+    m_italic = i;
+}
+
 void Terminal::setInverse(bool inv) {
     m_inverse = inv;
 }
@@ -305,6 +323,7 @@ void Terminal::resetAttributes() {
     m_currentFg = 0xE0E0E0;
     m_currentBg = 0x1A1B26;
     m_bold = false;
+    m_italic = false;
     m_inverse = false;
 }
 
@@ -352,4 +371,51 @@ const Cell& Terminal::cellAt(int x, int y) const {
 
 void Terminal::ensureCapacity() {
     m_buffer.resize(m_cols * m_rows);
+}
+
+void Terminal::pushToScrollback(const std::vector<Cell>& line) {
+    m_scrollback.push_back(line);
+    if ((int)m_scrollback.size() > SCROLLBACK_LIMIT) {
+        m_scrollback.erase(m_scrollback.begin());
+    }
+}
+
+void Terminal::scrollBack(int lines) {
+    lines = std::min(lines, (int)m_scrollback.size() - m_scrollOffset);
+    if (lines <= 0) return;
+    m_scrollOffset += lines;
+}
+
+void Terminal::scrollForward(int lines) {
+    lines = std::min(lines, m_scrollOffset);
+    if (lines <= 0) return;
+    m_scrollOffset -= lines;
+}
+
+void Terminal::scrollToBottom() {
+    m_scrollOffset = 0;
+}
+
+const std::vector<Cell>* Terminal::getScrollbackLine(int index) const {
+    if (index < 0 || index >= (int)m_scrollback.size()) return nullptr;
+    return &m_scrollback[index];
+}
+
+void Terminal::setMode(int mode, bool enabled) {
+    switch (mode) {
+        case 1000: m_mode1000 = enabled; break;
+        case 1002: m_mode1002 = enabled; break;
+        case 1006: m_mode1006 = enabled; break;
+        case 2004: m_mode2004 = enabled; break;
+    }
+}
+
+bool Terminal::getMode(int mode) const {
+    switch (mode) {
+        case 1000: return m_mode1000;
+        case 1002: return m_mode1002;
+        case 1006: return m_mode1006;
+        case 2004: return m_mode2004;
+        default: return false;
+    }
 }

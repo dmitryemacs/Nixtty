@@ -119,6 +119,7 @@ bool Renderer::createFontAtlas(HDC hdc) {
     std::vector<wchar_t> chars;
     for (wchar_t c = 0x20; c < 0x80; c++) chars.push_back(c);
     for (wchar_t c = 0xA0; c < 0x250; c++) chars.push_back(c);
+    for (wchar_t c = 0x300; c < 0x530; c++) chars.push_back(c);
     for (wchar_t c = 0xE000; c < 0xF000; c++) chars.push_back(c);
     for (wchar_t c = 0x2500; c < 0x2580; c++) chars.push_back(c);
     for (wchar_t c = 0x2590; c < 0x2600; c++) chars.push_back(c);

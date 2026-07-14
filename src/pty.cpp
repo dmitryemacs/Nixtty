@@ -125,12 +125,6 @@ bool Pty::spawn(const std::wstring& program, const std::wstring& cmdline) {
     m_thread = pi.hThread;
     m_running = true;
 
-    const char* initCmd =
-        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\r"
-        "[Console]::InputEncoding=[System.Text.Encoding]::UTF8\r";
-    DWORD bw = 0;
-    WriteFile(m_inputWrite, initCmd, (DWORD)strlen(initCmd), &bw, nullptr);
-
     m_readThread = std::thread(&Pty::readThread, this);
 
     ptylog("Shell spawned OK, PID=%d\n", (int)pi.dwProcessId);

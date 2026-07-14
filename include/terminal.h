@@ -1,9 +1,9 @@
 #pragma once
 
-#include <windows.h>
+#include <cstdint>
+#include <cwchar>
 #include <string>
 #include <vector>
-#include <cstdint>
 #include <functional>
 
 struct Cell {
@@ -11,6 +11,7 @@ struct Cell {
     uint32_t fg = 0xE0E0E0;
     uint32_t bg = 0x1A1B26;
     bool bold = false;
+    bool italic = false;
     bool inverse = false;
 };
 
@@ -46,6 +47,7 @@ public:
     void setFgColor(uint32_t color);
     void setBgColor(uint32_t color);
     void setBold(bool b);
+    void setItalic(bool i);
     void setInverse(bool inv);
     void resetAttributes();
 
@@ -78,6 +80,24 @@ public:
     void switchToMainBuffer();
     bool isAlternateBuffer() const { return m_altScreen; }
 
+    // Terminal modes
+    void setMode(int mode, bool enabled);
+    bool getMode(int mode) const;
+
+    // Mouse tracking
+    bool isMouseTracking() const { return m_mode1000 || m_mode1002; }
+    bool isMouseSGRMode() const { return m_mode1006; }
+    bool isBracketedPaste() const { return m_mode2004; }
+
+    // Scrollback
+    int getScrollbackLines() const { return (int)m_scrollback.size(); }
+    const std::vector<Cell>* getScrollbackLine(int index) const;
+    void scrollBack(int lines = 1);
+    void scrollForward(int lines = 1);
+    void scrollToBottom();
+    bool isScrolledBack() const { return m_scrollOffset > 0; }
+    int getScrollOffset() const { return m_scrollOffset; }
+
     std::function<void(const char*, size_t)> onWrite;
     std::function<void(int, int)> onResize;
 
@@ -94,6 +114,7 @@ private:
     uint32_t m_currentFg = 0xE0E0E0;
     uint32_t m_currentBg = 0x1A1B26;
     bool m_bold = false;
+    bool m_italic = false;
     bool m_inverse = false;
 
     int m_scrollTop = 0;
@@ -108,4 +129,17 @@ private:
     Cursor m_mainCursor;
     int m_mainScrollTop = 0;
     int m_mainScrollBottom = 0;
+
+    // Scrollback buffer
+    static const int SCROLLBACK_LIMIT = 10000;
+    std::vector<std::vector<Cell>> m_scrollback;
+    int m_scrollOffset = 0; // 0 = at bottom, >0 = scrolled back
+
+    void pushToScrollback(const std::vector<Cell>& line);
+
+    // Terminal modes
+    bool m_mode1000 = false; // Mouse tracking (X10)
+    bool m_mode1002 = false; // Mouse tracking (button-event)
+    bool m_mode1006 = false; // Mouse SGR encoding
+    bool m_mode2004 = false; // Bracketed paste
 };

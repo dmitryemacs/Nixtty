@@ -1,0 +1,38 @@
+# Nixtty configuration file
+# Place this file in ~/.config/nixtty/config.toml
+
+[font]
+family = "Hack Nerd Font Mono"
+size = 16
+
+[colors]
+# Background color (hex RGB)
+background = "#1A1B26"
+# Foreground color (hex RGB)
+foreground = "#C0CAF5"
+# Cursor color
+cursor = "#FFFFFF"
+# Selection background color
+selection = "#4D6299"
+
+# ANSI colors (0-15)
+# color0 = "#1A1B26"   # Black
+# color1 = "#F7768E"   # Red
+# color2 = "#9ECE6A"   # Green
+# color3 = "#E0AF68"   # Yellow
+# color4 = "#7AA2F7"   # Blue
+# color5 = "#BB9AF7"   # Magenta
+# color6 = "#7DCFFF"   # Cyan
+# color7 = "#A9B1D6"   # White
+# color8 = "#414868"   # Bright Black
+# color9 = "#F7768E"   # Bright Red
+# color10 = "#9ECE6A"  # Bright Green
+# color11 = "#E0AF68"  # Bright Yellow
+# color12 = "#7AA2F7"  # Bright Blue
+# color13 = "#BB9AF7"  # Bright Magenta
+# color14 = "#7DCFFF"  # Bright Cyan
+# color15 = "#C0CAF5"  # Bright White
+
+[window]
+# Window opacity (0.0 - 1.0)
+opacity = 1.0

@@ -371,23 +371,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        BYTE keyState[256];
-        GetKeyboardState(keyState);
-        if (altGr) {
-            keyState[VK_CONTROL] &= 0x7F;
-        }
-
-        wchar_t wbuf[8] = {};
-        int charCount = ToUnicode(wParam, (lParam >> 16) & 0xFF, keyState, wbuf, 8, 0);
-
-        if (charCount > 0) {
-            if (alt && !altGr) {
-                char esc = '\x1b';
-                g_pty->write(&esc, 1);
-            }
-            writeUtf16String(wbuf, charCount);
-        }
-
         return 0;
     }
 
@@ -399,32 +382,45 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         if (ctrl) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
-        BYTE keyState[256];
-        GetKeyboardState(keyState);
-        wchar_t wbuf[8] = {};
-        int charCount = ToUnicode(wParam, (lParam >> 16) & 0xFF, keyState, wbuf, 8, 0);
+        if (wParam == VK_F1)  { g_pty->write("\x1bOP", 3); return 0; }
+        if (wParam == VK_F2)  { g_pty->write("\x1bOQ", 3); return 0; }
+        if (wParam == VK_F3)  { g_pty->write("\x1bOR", 3); return 0; }
+        if (wParam == VK_F4)  { g_pty->write("\x1bOS", 3); return 0; }
 
-        if (charCount > 0) {
+        const char* seq = nullptr;
+        size_t len = 0;
+        switch (wParam) {
+        case VK_LEFT:   seq = "\x1b[1;3D"; len = 6; break;
+        case VK_RIGHT:  seq = "\x1b[1;3C"; len = 6; break;
+        case VK_UP:     seq = "\x1b[1;3A"; len = 6; break;
+        case VK_DOWN:   seq = "\x1b[1;3B"; len = 6; break;
+        case VK_HOME:   seq = "\x1b[1;3H"; len = 6; break;
+        case VK_END:    seq = "\x1b[1;3F"; len = 6; break;
+        case VK_PRIOR:  seq = "\x1b[5;3~"; len = 6; break;
+        case VK_NEXT:   seq = "\x1b[6;3~"; len = 6; break;
+        }
+        if (seq) { g_pty->write(seq, len); return 0; }
+
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    case WM_CHAR: {
+        if (!g_pty) return 0;
+        wchar_t ch = (wchar_t)wParam;
+        if (ch >= 32) {
+            writeUtf8(ch);
+        }
+        return 0;
+    }
+
+    case WM_SYSCHAR: {
+        if (!g_pty) return 0;
+        wchar_t ch = (wchar_t)wParam;
+        if (ch >= 32) {
             char esc = '\x1b';
             g_pty->write(&esc, 1);
-            writeUtf16String(wbuf, charCount);
-        } else {
-            switch (wParam) {
-            case VK_F1:  g_pty->write("\x1bOP", 3); break;
-            case VK_F2:  g_pty->write("\x1bOQ", 3); break;
-            case VK_F3:  g_pty->write("\x1bOR", 3); break;
-            case VK_F4:  g_pty->write("\x1bOS", 3); break;
-            case VK_LEFT:  g_pty->write("\x1b[1;3D", 6); break;
-            case VK_RIGHT: g_pty->write("\x1b[1;3C", 6); break;
-            case VK_UP:    g_pty->write("\x1b[1;3A", 6); break;
-            case VK_DOWN:  g_pty->write("\x1b[1;3B", 6); break;
-            case VK_HOME:  g_pty->write("\x1b[1;3H", 6); break;
-            case VK_END:   g_pty->write("\x1b[1;3F", 6); break;
-            case VK_PRIOR: g_pty->write("\x1b[5;3~", 6); break;
-            case VK_NEXT:  g_pty->write("\x1b[6;3~", 6); break;
-            }
+            writeUtf8(ch);
         }
-
         return 0;
     }
 
