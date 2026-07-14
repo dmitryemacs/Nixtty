@@ -721,37 +721,90 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
 void Renderer::flushBgBatch() {
     if (m_bgBatch.empty()) return;
     glDisable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
+
+    std::vector<float> vertices;
+    std::vector<uint8_t> colors;
+    vertices.reserve(m_bgBatch.size() * 8);
+    colors.reserve(m_bgBatch.size() * 16);
+
     for (const auto& q : m_bgBatch) {
-        glColor4ub((q.color >> 16) & 0xFF, (q.color >> 8) & 0xFF, q.color & 0xFF, 255);
-        glVertex2f(q.x, q.y);
-        glVertex2f(q.x + q.w, q.y);
-        glVertex2f(q.x + q.w, q.y + q.h);
-        glVertex2f(q.x, q.y + q.h);
+        vertices.push_back(q.x);      vertices.push_back(q.y);
+        vertices.push_back(q.x + q.w); vertices.push_back(q.y);
+        vertices.push_back(q.x + q.w); vertices.push_back(q.y + q.h);
+        vertices.push_back(q.x);      vertices.push_back(q.y + q.h);
+        uint8_t r = (q.color >> 16) & 0xFF;
+        uint8_t g = (q.color >> 8) & 0xFF;
+        uint8_t b = q.color & 0xFF;
+        for (int i = 0; i < 4; i++) {
+            colors.push_back(r); colors.push_back(g); colors.push_back(b); colors.push_back(255);
+        }
     }
-    glEnd();
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, vertices.data());
+    glColorPointer(4, GL_UNSIGNED_BYTE, 0, colors.data());
+    glDrawArrays(GL_QUADS, 0, (GLsizei)(m_bgBatch.size() * 4));
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
 }
 
 void Renderer::flushGlyphBatch() {
     if (m_glyphBatch.empty()) return;
     glEnable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
 
     int lastStyle = -1;
-    for (const auto& q : m_glyphBatch) {
-        if (q.style != lastStyle) {
-            glEnd();
-            glBindTexture(GL_TEXTURE_2D, m_fontTexture[q.style]);
-            glBegin(GL_QUADS);
-            lastStyle = q.style;
+    int start = 0;
+
+    auto flushRange = [&](int s, int e) {
+        if (s >= e) return;
+        int count = e - s;
+        std::vector<float> vertices;
+        std::vector<float> texcoords;
+        std::vector<uint8_t> colors;
+        vertices.reserve(count * 8);
+        texcoords.reserve(count * 8);
+        colors.reserve(count * 16);
+
+        for (int i = s; i < e; i++) {
+            const auto& q = m_glyphBatch[i];
+            vertices.push_back(q.x);      vertices.push_back(q.y);
+            vertices.push_back(q.x + q.w); vertices.push_back(q.y);
+            vertices.push_back(q.x + q.w); vertices.push_back(q.y + q.h);
+            vertices.push_back(q.x);      vertices.push_back(q.y + q.h);
+            texcoords.push_back(q.u0); texcoords.push_back(q.v0);
+            texcoords.push_back(q.u1); texcoords.push_back(q.v0);
+            texcoords.push_back(q.u1); texcoords.push_back(q.v1);
+            texcoords.push_back(q.u0); texcoords.push_back(q.v1);
+            uint8_t r = (q.color >> 16) & 0xFF;
+            uint8_t g = (q.color >> 8) & 0xFF;
+            uint8_t b = q.color & 0xFF;
+            for (int j = 0; j < 4; j++) {
+                colors.push_back(r); colors.push_back(g); colors.push_back(b); colors.push_back(255);
+            }
         }
-        glColor4ub((q.color >> 16) & 0xFF, (q.color >> 8) & 0xFF, q.color & 0xFF, 255);
-        glTexCoord2f(q.u0, q.v0); glVertex2f(q.x, q.y);
-        glTexCoord2f(q.u1, q.v0); glVertex2f(q.x + q.w, q.y);
-        glTexCoord2f(q.u1, q.v1); glVertex2f(q.x + q.w, q.y + q.h);
-        glTexCoord2f(q.u0, q.v1); glVertex2f(q.x, q.y + q.h);
+
+        glBindTexture(GL_TEXTURE_2D, m_fontTexture[m_glyphBatch[s].style]);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glVertexPointer(2, GL_FLOAT, 0, vertices.data());
+        glTexCoordPointer(2, GL_FLOAT, 0, texcoords.data());
+        glColorPointer(4, GL_UNSIGNED_BYTE, 0, colors.data());
+        glDrawArrays(GL_QUADS, 0, (GLsizei)count * 4);
+        glDisableClientState(GL_COLOR_ARRAY);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_VERTEX_ARRAY);
+    };
+
+    for (int i = 0; i < (int)m_glyphBatch.size(); i++) {
+        if (m_glyphBatch[i].style != lastStyle) {
+            flushRange(start, i);
+            start = i;
+            lastStyle = m_glyphBatch[i].style;
+        }
     }
-    glEnd();
+    flushRange(start, (int)m_glyphBatch.size());
 }
 
 void Renderer::drawCursor(int x, int y, int cellW, int cellH, uint32_t color) {
@@ -761,11 +814,21 @@ void Renderer::drawCursor(int x, int y, int cellW, int cellH, uint32_t color) {
     float h = (float)cellH;
 
     glDisable(GL_TEXTURE_2D);
-    glColor4ub((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
-    glBegin(GL_QUADS);
-        glVertex2f(px, py);
-        glVertex2f(px + w, py);
-        glVertex2f(px + w, py + h);
-        glVertex2f(px, py + h);
-    glEnd();
+    float vertices[] = {
+        px, py, px + w, py, px + w, py + h, px, py + h
+    };
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >> 8) & 0xFF;
+    uint8_t b = color & 0xFF;
+    uint8_t colors[] = {
+        r, g, b, 255, r, g, b, 255, r, g, b, 255, r, g, b, 255
+    };
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, vertices);
+    glColorPointer(4, GL_UNSIGNED_BYTE, 0, colors);
+    glDrawArrays(GL_QUADS, 0, 4);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
 }
