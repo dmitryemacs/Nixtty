@@ -45,6 +45,8 @@ private:
     struct GlyphInfo {
         float u0, v0, u1, v1;
         int width, height;
+        float bearX, bearY;
+        float glyphW, glyphH;
     };
     std::unordered_map<wchar_t, GlyphInfo> m_glyphs;
 

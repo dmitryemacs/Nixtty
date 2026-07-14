@@ -368,9 +368,6 @@ static void windowRefreshCallback(GLFWwindow* window) {
 
     g_renderer->beginFrame(fbWidth, fbHeight, winWidth, winHeight);
 
-    if (g_paintCount <= 1)
-        log("Render: fb=%dx%d win=%dx%d\n", fbWidth, fbHeight, winWidth, winHeight);
-
     {
         std::lock_guard<std::mutex> lock(g_lock);
         const Cell* buf = g_terminal->getBuffer();

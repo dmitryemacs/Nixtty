@@ -28,6 +28,264 @@ static void dbg(const char* fmt, ...) {
     if (r_log) { fprintf(r_log, "[RND] %s", buf); fflush(r_log); }
 }
 
+static void drawBoxDrawing(CGContextRef ctx, wchar_t ch, int gw, int gh,
+                           double baselineY, double ascent, double descent, double advance) {
+    double midX = gw / 2.0;
+    double midY = gh / 2.0;
+    double left = 2.0;
+    double right = gw - 2.0;
+    double top = 2.0;
+    double bottom = gh - 2.0;
+
+    CGContextSetLineWidth(ctx, 1.0);
+    CGContextSetLineCap(ctx, kCGLineCapSquare);
+
+    auto hline = [&]() {
+        CGContextMoveToPoint(ctx, left, midY);
+        CGContextAddLineToPoint(ctx, right, midY);
+    };
+    auto vline = [&]() {
+        CGContextMoveToPoint(ctx, midX, top);
+        CGContextAddLineToPoint(ctx, midX, bottom);
+    };
+    auto hleft = [&]() {
+        CGContextMoveToPoint(ctx, left, midY);
+        CGContextAddLineToPoint(ctx, midX, midY);
+    };
+    auto hright = [&]() {
+        CGContextMoveToPoint(ctx, midX, midY);
+        CGContextAddLineToPoint(ctx, right, midY);
+    };
+    auto vtop = [&]() {
+        CGContextMoveToPoint(ctx, midX, top);
+        CGContextAddLineToPoint(ctx, midX, midY);
+    };
+    auto vbot = [&]() {
+        CGContextMoveToPoint(ctx, midX, midY);
+        CGContextAddLineToPoint(ctx, midX, bottom);
+    };
+
+    switch (ch) {
+        case 0x2500: hline(); break;             // ─
+        case 0x2502: vline(); break;             // │
+        case 0x250C: hright(); vbot(); break;    // ┌
+        case 0x2510: hleft(); vbot(); break;     // ┐
+        case 0x2514: hright(); vtop(); break;    // └
+        case 0x2518: hleft(); vtop(); break;     // ┘
+        case 0x251C: hright(); vline(); break;   // ├
+        case 0x2524: hleft(); vline(); break;    // ┤
+        case 0x252C: hline(); vbot(); break;     // ┬
+        case 0x2534: hline(); vtop(); break;     // ┴
+        case 0x253C: hline(); vline(); break;    // ┼
+        case 0x2501: hline(); break;             // ━ (bold horizontal)
+        case 0x2503: vline(); break;             // ┃ (bold vertical)
+        case 0x250F: hright(); vbot(); break;    // ┏
+        case 0x2513: hleft(); vbot(); break;     // ┓
+        case 0x2517: hright(); vtop(); break;    // ┗
+        case 0x251B: hleft(); vtop(); break;     // ┛
+        case 0x2523: hright(); vline(); break;   // ┣
+        case 0x252B: hleft(); vline(); break;    // ┫
+        case 0x252F: hline(); vbot(); break;     // ┳
+        case 0x2537: hline(); vtop(); break;     // ┻
+        case 0x253B: hline(); vline(); break;    // ┋
+        case 0x2506: vline(); break;             // ┆ (dotted vertical)
+        case 0x2504: hline(); break;             // ┄ (dotted horizontal)
+        case 0x2508: hline(); break;             // ┈ (centered horizontal)
+        case 0x250A: vline(); break;             // ┊ (centered vertical)
+        case 0x250E: hright(); vbot(); break;    // ┎ (top-left corner, no bottom)
+        case 0x2512: hleft(); vbot(); break;     // ┒
+        case 0x2516: hright(); vtop(); break;    // ┖
+        case 0x251A: hleft(); vtop(); break;     // ┚
+        case 0x2522: hright(); vline(); break;   // ┒
+        case 0x252A: hleft(); vline(); break;    // ┚
+        case 0x252E: hline(); vbot(); break;     // ┮
+        case 0x2536: hline(); vtop(); break;     // ┶
+        case 0x253A: hline(); vline(); break;    // ┺
+        case 0x253E: hline(); vline(); break;    // ┾
+        case 0x2540: hline(); vline(); break;    // ─
+        case 0x2541: hline(); vline(); break;    // ─
+        case 0x2542: hline(); vline(); break;    // ─
+        case 0x2543: hline(); vline(); break;    // ─
+        case 0x2544: hline(); break;             // ─
+        case 0x2545: hline(); break;             // ─
+        case 0x2546: hline(); break;             // ─
+        case 0x2547: hline(); break;             // ─
+        case 0x2548: hline(); break;             // ─
+        case 0x2549: hline(); break;             // ─
+        case 0x254A: hline(); break;             // ─
+        case 0x254B: hline(); vline(); break;    // ┋
+        case 0x254C: hline(); break;             // ─
+        case 0x254D: hline(); break;             // ─
+        case 0x254E: vline(); break;             // ┃
+        case 0x254F: vline(); break;             // ┃
+        case 0x2550: hline(); break;             // ═
+        case 0x2551: vline(); break;             // ║
+        case 0x2552: hleft(); vbot(); break;     // ╒
+        case 0x2553: hright(); vtop(); break;    // ╓
+        case 0x2554: hright(); vbot(); break;    // ╔
+        case 0x2555: hleft(); vbot(); break;     // ╕
+        case 0x2556: hleft(); vbot(); break;     // ╖
+        case 0x2557: hleft(); vbot(); break;     // ╗
+        case 0x2558: hright(); vtop(); break;    // ╘
+        case 0x2559: hright(); vtop(); break;    // ╙
+        case 0x255A: hright(); vtop(); break;    // ╚
+        case 0x255B: hleft(); vtop(); break;     // ╛
+        case 0x255C: hleft(); vtop(); break;     // ╜
+        case 0x255D: hleft(); vtop(); break;     // ╝
+        case 0x255E: hright(); vline(); break;   // ╞
+        case 0x255F: hright(); vline(); break;   // ╟
+        case 0x2560: hright(); vline(); break;   // ╠
+        case 0x2561: hleft(); vline(); break;    // ╡
+        case 0x2562: hleft(); vline(); break;    // ╢
+        case 0x2563: hleft(); vline(); break;    // ╣
+        case 0x2564: hline(); vbot(); break;     // ╤
+        case 0x2565: hline(); vbot(); break;     // ╥
+        case 0x2566: hline(); vbot(); break;     // ╦
+        case 0x2567: hline(); vtop(); break;     // ╧
+        case 0x2568: hline(); vtop(); break;     // ╨
+        case 0x2569: hline(); vtop(); break;     // ╩
+        case 0x256A: hline(); vline(); break;    // ╪
+        case 0x256B: hline(); vline(); break;    // ╫
+        case 0x256C: hline(); vline(); break;    // ╬
+        case 0x256D: hright(); vbot(); break;    // ╭
+        case 0x256E: hleft(); vbot(); break;     // ╮
+        case 0x256F: hleft(); vtop(); break;     // ╯
+        case 0x2570: hright(); vtop(); break;    // ╰
+        case 0x2571:                           // ╱
+            CGContextMoveToPoint(ctx, right, top);
+            CGContextAddLineToPoint(ctx, left, bottom);
+            break;
+        case 0x2572:                           // ╲
+            CGContextMoveToPoint(ctx, left, top);
+            CGContextAddLineToPoint(ctx, right, bottom);
+            break;
+        case 0x2573:                           // ╳
+            CGContextMoveToPoint(ctx, right, top);
+            CGContextAddLineToPoint(ctx, left, bottom);
+            CGContextMoveToPoint(ctx, left, top);
+            CGContextAddLineToPoint(ctx, right, bottom);
+            break;
+        case 0x2574: hleft(); break;             // ╴
+        case 0x2575: vtop(); break;              // ╵
+        case 0x2576: hright(); break;            // ╶
+        case 0x2577: vbot(); break;              // ╷
+        case 0x2578: hleft(); break;             // ╸
+        case 0x2579: vtop(); break;              // ╹
+        case 0x257A: hright(); break;            // ╺
+        case 0x257B: vbot(); break;              // ╻
+        case 0x257C: hleft(); hright(); break;   // ╼
+        case 0x257D: vtop(); vbot(); break;      // ╽
+        case 0x257E: hright(); vbot(); break;    // ╾
+        case 0x257F: hleft(); vtop(); break;     // ╿
+        // Block elements
+        case 0x2580: // ▀ Upper half block
+            CGContextFillRect(ctx, CGRectMake(left, midY, right - left, bottom - midY));
+            break;
+        case 0x2584: // ▄ Lower half block
+            CGContextFillRect(ctx, CGRectMake(left, top, right - left, midY - top));
+            break;
+        case 0x2588: // █ Full block
+            CGContextFillRect(ctx, CGRectMake(left, top, right - left, bottom - top));
+            break;
+        case 0x2589: // ▉ Left seven eighths block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) * 7.0/8.0, bottom - top));
+            break;
+        case 0x258A: // ▊ Left three quarters block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) * 3.0/4.0, bottom - top));
+            break;
+        case 0x258B: // ▋ Left five eighths block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) * 5.0/8.0, bottom - top));
+            break;
+        case 0x258C: // ▌ Left half block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) / 2.0, bottom - top));
+            break;
+        case 0x258D: // ▍ Left three eighths block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) * 3.0/8.0, bottom - top));
+            break;
+        case 0x258E: // ▎ Left one quarter block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) / 4.0, bottom - top));
+            break;
+        case 0x258F: // ▏ Left one eighth block
+            CGContextFillRect(ctx, CGRectMake(left, top, (right - left) / 8.0, bottom - top));
+            break;
+        case 0x2590: // ▐ Right half block
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, bottom - top));
+            break;
+        case 0x2591: // ░ Light shade (25%)
+            for (int sy = (int)top; sy < (int)bottom; sy += 4) {
+                for (int sx = (int)left; sx < (int)right; sx += 4) {
+                    CGContextFillRect(ctx, CGRectMake(sx, sy, 1, 1));
+                }
+            }
+            break;
+        case 0x2592: // ▒ Medium shade (50%)
+            for (int sy = (int)top; sy < (int)bottom; sy += 2) {
+                for (int sx = (int)left; sx < (int)right; sx += 2) {
+                    if ((sx + sy) % 4 == 0)
+                        CGContextFillRect(ctx, CGRectMake(sx, sy, 1, 1));
+                }
+            }
+            break;
+        case 0x2593: // ▓ Dark shade (75%)
+            for (int sy = (int)top; sy < (int)bottom; sy += 2) {
+                for (int sx = (int)left; sx < (int)right; sx += 2) {
+                    if ((sx + sy) % 4 != 0)
+                        CGContextFillRect(ctx, CGRectMake(sx, sy, 1, 1));
+                }
+            }
+            break;
+        case 0x2594: // ▔ Upper one eighth block
+            CGContextFillRect(ctx, CGRectMake(left, bottom - (bottom - top)/8.0, right - left, (bottom - top)/8.0));
+            break;
+        case 0x2595: // ▕ Right one eighth block
+            CGContextFillRect(ctx, CGRectMake(right - (right - left)/8.0, top, (right - left)/8.0, bottom - top));
+            break;
+        case 0x2596: // ▖ Quadrant lower left
+            CGContextFillRect(ctx, CGRectMake(left, top, midX - left, midY - top));
+            break;
+        case 0x2597: // ▗ Quadrant lower right
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, midY - top));
+            break;
+        case 0x2598: // ▘ Quadrant upper left
+            CGContextFillRect(ctx, CGRectMake(left, midY, midX - left, bottom - midY));
+            break;
+        case 0x2599: // ▙ Quadrant upper left + lower left + lower right
+            CGContextFillRect(ctx, CGRectMake(left, top, midX - left, midY - top));
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, midY - top));
+            CGContextFillRect(ctx, CGRectMake(left, midY, midX - left, bottom - midY));
+            break;
+        case 0x259A: // ▚ Quadrant upper left + lower right
+            CGContextFillRect(ctx, CGRectMake(left, midY, midX - left, bottom - midY));
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, midY - top));
+            break;
+        case 0x259B: // ▛ Quadrant upper left + upper right + lower left
+            CGContextFillRect(ctx, CGRectMake(left, top, midX - left, midY - top));
+            CGContextFillRect(ctx, CGRectMake(left, midY, midX - left, bottom - midY));
+            CGContextFillRect(ctx, CGRectMake(midX, midY, right - midX, bottom - midY));
+            break;
+        case 0x259C: // ▜ Quadrant upper left + upper right + lower right
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, midY - top));
+            CGContextFillRect(ctx, CGRectMake(left, midY, midX - left, bottom - midY));
+            CGContextFillRect(ctx, CGRectMake(midX, midY, right - midX, bottom - midY));
+            break;
+        case 0x259D: // ▝ Quadrant upper right
+            CGContextFillRect(ctx, CGRectMake(midX, midY, right - midX, bottom - midY));
+            break;
+        case 0x259E: // ▞ Quadrant upper right + lower left
+            CGContextFillRect(ctx, CGRectMake(left, top, midX - left, midY - top));
+            CGContextFillRect(ctx, CGRectMake(midX, midY, right - midX, bottom - midY));
+            break;
+        case 0x259F: // ▟ Quadrant upper right + lower left + lower right
+            CGContextFillRect(ctx, CGRectMake(midX, top, right - midX, midY - top));
+            CGContextFillRect(ctx, CGRectMake(left, top, midX - left, midY - top));
+            CGContextFillRect(ctx, CGRectMake(midX, midY, right - midX, bottom - midY));
+            break;
+        default:
+            break;
+    }
+    CGContextStrokePath(ctx);
+}
+
 Renderer::Renderer() = default;
 Renderer::~Renderer() { shutdown(); }
 
@@ -109,16 +367,19 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
     double descent = CTFontGetDescent(ctFont);
     double leading = CTFontGetLeading(ctFont);
 
-    int atlasCellW = (int)ceil(advance) + 2;
-    int atlasCellH = (int)ceil(ascent + descent + leading) + 2;
-    if (atlasCellW < 2) atlasCellW = 16;
-    if (atlasCellH < 2) atlasCellH = 32;
+    m_cellWidth = (int)round(advance / scaleFactor);
+    m_cellHeight = (int)round((ascent + descent + leading) / scaleFactor);
+    if (m_cellWidth < 1) m_cellWidth = 8;
+    if (m_cellHeight < 1) m_cellHeight = 16;
 
-    m_cellWidth = (int)ceil((double)atlasCellW / scaleFactor);
-    m_cellHeight = (int)ceil((double)atlasCellH / scaleFactor);
+    int atlasCellW = (int)ceil(advance) + 4;
+    int atlasCellH = (int)ceil(ascent + descent + leading) + 4;
 
-    dbg("Atlas cell: %dx%d, logical cell: %dx%d (ascent=%.1f descent=%.1f leading=%.1f advance=%.1f)\n",
-        atlasCellW, atlasCellH, m_cellWidth, m_cellHeight, ascent, descent, leading, advance);
+    dbg("Cell: %dx%d (logical), atlas: %dx%d (physical, @%.0fpt)\n",
+        m_cellWidth, m_cellHeight, atlasCellW, atlasCellH, atlasFontSize);
+
+    // Baseline position in atlas bitmap (CG coords, y=0 at bottom)
+    double baselineY = descent + leading / 2.0 + 2.0;
 
     std::vector<wchar_t> chars;
     for (wchar_t c = 0x20; c < 0x80; c++) chars.push_back(c);
@@ -150,7 +411,117 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
     std::sort(chars.begin(), chars.end());
     chars.erase(std::unique(chars.begin(), chars.end()), chars.end());
 
-    int totalChars = (int)chars.size();
+    CFStringRef fontAttrKey = kCTFontAttributeName;
+    CFDictionaryRef fontAttr = CFDictionaryCreate(
+        kCFAllocatorDefault,
+        (const void**)&fontAttrKey, (const void**)&ctFont,
+        1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+    struct RenderedGlyph {
+        wchar_t ch;
+        CGGlyph glyph;
+        CTFontRef font;
+        CGFloat adv;
+        CGFloat bearingX, bearingY;
+        CGFloat bbW, bbH;
+        bool isBoxDrawing;
+    };
+    std::vector<RenderedGlyph> rendered;
+
+    std::vector<wchar_t> missing;
+    std::unordered_map<wchar_t, CGGlyph> directGlyphs;
+
+    for (wchar_t ch : chars) {
+        UniChar uc = (UniChar)ch;
+        CGGlyph glyph = 0;
+        CTFontGetGlyphsForCharacters(ctFont, &uc, &glyph, 1);
+        if (glyph != 0) {
+            directGlyphs[ch] = glyph;
+        } else {
+            missing.push_back(ch);
+        }
+    }
+
+    dbg("Direct: %d, missing: %d\n", (int)directGlyphs.size(), (int)missing.size());
+
+    std::unordered_map<wchar_t, std::pair<CGGlyph, CTFontRef>> fallbackGlyphs;
+    std::vector<CTFontRef> retainedFonts;
+    if (!missing.empty()) {
+        std::vector<UniChar> missUni(missing.begin(), missing.end());
+        CFStringRef missStr = CFStringCreateWithCharacters(kCFAllocatorDefault, missUni.data(), missUni.size());
+        CFAttributedStringRef missAttrStr = CFAttributedStringCreate(kCFAllocatorDefault, missStr, fontAttr);
+        CFRelease(missStr);
+        CTLineRef missLine = CTLineCreateWithAttributedString(missAttrStr);
+        CFRelease(missAttrStr);
+
+        CFArrayRef runs = CTLineGetGlyphRuns(missLine);
+        CFIndex runCount = CFArrayGetCount(runs);
+        CFIndex charIdx = 0;
+
+        for (CFIndex r = 0; r < runCount && charIdx < (CFIndex)missing.size(); r++) {
+            CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs, r);
+            CFIndex glyphCount = CTRunGetGlyphCount(run);
+
+            CFDictionaryRef runAttrs = CTRunGetAttributes(run);
+            CTFontRef runFont = ctFont;
+            CFDictionaryGetValueIfPresent(runAttrs, kCTFontAttributeName, (const void**)&runFont);
+
+            if (runFont != ctFont) CFRetain(runFont);
+            retainedFonts.push_back(runFont);
+
+            std::vector<CGGlyph> runGlyphs(glyphCount);
+            CTRunGetGlyphs(run, CFRangeMake(0, glyphCount), runGlyphs.data());
+
+            for (CFIndex g = 0; g < glyphCount && charIdx < (CFIndex)missing.size(); g++, charIdx++) {
+                if (runGlyphs[g] != 0) {
+                    fallbackGlyphs[missing[charIdx]] = {runGlyphs[g], runFont};
+                }
+            }
+        }
+        CFRelease(missLine);
+    }
+
+    dbg("Fallback: %d glyphs found\n", (int)fallbackGlyphs.size());
+
+    for (wchar_t ch : chars) {
+        CGGlyph glyph = 0;
+        CTFontRef useFont = ctFont;
+
+        auto itDirect = directGlyphs.find(ch);
+        if (itDirect != directGlyphs.end()) {
+            glyph = itDirect->second;
+        } else {
+            auto itFallback = fallbackGlyphs.find(ch);
+            if (itFallback != fallbackGlyphs.end()) {
+                glyph = itFallback->second.first;
+                useFont = itFallback->second.second;
+            }
+        }
+
+        if (glyph == 0) continue;
+
+        CGRect bbRect;
+        CTFontGetBoundingRectsForGlyphs(useFont, kCTFontOrientationDefault, &glyph, &bbRect, 1);
+        CGFloat advVal = CTFontGetAdvancesForGlyphs(useFont, kCTFontOrientationDefault, &glyph, nullptr, 1);
+
+        bool isBox = (ch >= 0x2500 && ch <= 0x259F);
+
+        RenderedGlyph rg;
+        rg.ch = ch;
+        rg.glyph = glyph;
+        rg.font = useFont;
+        rg.adv = advVal;
+        rg.bearingX = bbRect.origin.x;
+        rg.bearingY = bbRect.origin.y;
+        rg.bbW = bbRect.size.width;
+        rg.bbH = bbRect.size.height;
+        rg.isBoxDrawing = isBox;
+        rendered.push_back(rg);
+    }
+
+    CFRelease(fontAttr);
+
+    int totalChars = (int)rendered.size();
     int rows = (totalChars + ATLAS_COLS - 1) / ATLAS_COLS;
 
     m_atlasTexW = ATLAS_COLS * atlasCellW;
@@ -160,21 +531,16 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
     m_atlasTexW = nextPow2(m_atlasTexW);
     m_atlasTexH = nextPow2(m_atlasTexH);
 
-    dbg("Atlas: %d chars, grid=%dx%d, tex=%dx%d\n", totalChars, ATLAS_COLS, rows, m_atlasTexW, m_atlasTexH);
+    dbg("Atlas: %d rendered chars, grid=%dx%d, tex=%dx%d\n", totalChars, ATLAS_COLS, rows, m_atlasTexW, m_atlasTexH);
 
     std::vector<uint8_t> rgba(m_atlasTexW * m_atlasTexH * 4, 0);
 
     for (int i = 0; i < totalChars; i++) {
-        wchar_t ch = chars[i];
+        const RenderedGlyph& rg = rendered[i];
         int col = i % ATLAS_COLS;
         int row = i / ATLAS_COLS;
         int px = col * atlasCellW;
         int py = row * atlasCellH;
-
-        UniChar uc = (UniChar)ch;
-        CGGlyph glyph = 0;
-        CTFontGetGlyphsForCharacters(ctFont, &uc, &glyph, 1);
-        if (glyph == 0) continue;
 
         int gw = atlasCellW;
         int gh = atlasCellH;
@@ -193,11 +559,14 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
             CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
             CGContextSetTextDrawingMode(ctx, kCGTextFill);
 
-            double adv = CTFontGetAdvancesForGlyphs(ctFont, kCTFontOrientationDefault, &glyph, nullptr, 1);
-            CGFloat gx = (CGFloat)((gw - adv) / 2.0);
-            CGFloat gy = (CGFloat)((gh - ascent + descent) / 2.0);
-            CGPoint point = { gx, gy };
-            CTFontDrawGlyphs(ctFont, &glyph, &point, 1, ctx);
+            if (rg.isBoxDrawing) {
+                drawBoxDrawing(ctx, rg.ch, gw, gh, baselineY, ascent, descent, rg.adv);
+            } else {
+                CGFloat gx = (CGFloat)((gw - rg.adv) / 2.0);
+                CGFloat gy = (CGFloat)baselineY;
+                CGPoint point = { gx, gy };
+                CTFontDrawGlyphs(rg.font, &rg.glyph, &point, 1, ctx);
+            }
 
             CGContextRelease(ctx);
         }
@@ -219,17 +588,35 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
             }
         }
 
+        // Compute glyph bounds in atlas pixel coords
+        double renderX = (gw - rg.adv) / 2.0;
+        double glyphLeft = renderX + rg.bearingX;
+        double glyphTop = baselineY + rg.bearingY;
+        double glyphBottom = glyphTop - rg.bbH;
+        double glyphRight = glyphLeft + rg.bbW;
+
+        // Clamp to atlas cell bounds
+        if (glyphLeft < 0) glyphLeft = 0;
+        if (glyphBottom < 0) glyphBottom = 0;
+        if (glyphRight > gw) glyphRight = gw;
+        if (glyphTop > gh) glyphTop = gh;
+
         GlyphInfo gi = {};
-        gi.u0 = (float)px / m_atlasTexW;
-        gi.v0 = (float)py / m_atlasTexH;
-        gi.u1 = (float)(px + atlasCellW) / m_atlasTexW;
-        gi.v1 = (float)(py + atlasCellH) / m_atlasTexH;
-        gi.width = m_cellWidth;
-        gi.height = m_cellHeight;
-        m_glyphs[ch] = gi;
+        gi.u0 = (float)(px + glyphLeft) / m_atlasTexW;
+        gi.v0 = (float)(py + glyphTop) / m_atlasTexH;
+        gi.u1 = (float)(px + glyphRight) / m_atlasTexW;
+        gi.v1 = (float)(py + glyphBottom) / m_atlasTexH;
+        gi.width = (float)rg.bbW / scaleFactor;
+        gi.height = (float)rg.bbH / scaleFactor;
+        gi.bearX = (float)(renderX + rg.bearingX) / scaleFactor;
+        gi.bearY = (float)(rg.bearingY) / scaleFactor;
+        gi.glyphW = (float)rg.bbW / scaleFactor;
+        gi.glyphH = (float)rg.bbH / scaleFactor;
+        m_glyphs[rg.ch] = gi;
     }
 
     CFRelease(ctFont);
+    for (CTFontRef f : retainedFonts) CFRelease(f);
 
     dbg("Font atlas created, glyphs=%d\n", (int)m_glyphs.size());
 
@@ -294,8 +681,13 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
     if (it == m_glyphs.end()) return;
     const GlyphInfo& gi = it->second;
 
-    // Glyph is already cell-sized and centered in atlas, draw at cell position
-    m_glyphBatch.push_back({px, py, w, h,
+    // Position glyph using bearing offsets (Alacritty-style)
+    float gx = px + gi.bearX;
+    float gy = py + (float)m_cellHeight - gi.bearY - gi.glyphH;
+    float gw = gi.glyphW;
+    float gh = gi.glyphH;
+
+    m_glyphBatch.push_back({gx, gy, gw, gh,
                             gi.u0, gi.v0, gi.u1, gi.v1, fg});
 }
 
