@@ -1,21 +1,26 @@
 #pragma once
 
-#include <windows.h>
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#else
 #include <GL/gl.h>
+#endif
+#include <GLFW/glfw3.h>
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
 #include <cstdio>
+#include <string>
 
 class Renderer {
 public:
     Renderer();
     ~Renderer();
 
-    bool init(HWND hwnd);
+    bool init(GLFWwindow* window);
     void shutdown();
 
-    void beginFrame(int width, int height);
+    void beginFrame(int fbWidth, int fbHeight, int winWidth, int winHeight);
     void flushBatches();
     void present();
     void endFrame();
@@ -28,11 +33,9 @@ public:
     bool isInitialized() const { return m_initialized; }
 
 private:
-    bool createFontAtlas(HDC hdc);
+    bool createFontAtlas(int fbW, int fbH, int winW, int winH);
 
-    HWND m_hwnd = nullptr;
-    HDC m_hdc = nullptr;
-    HGLRC m_hglrc = nullptr;
+    GLFWwindow* m_window = nullptr;
     bool m_initialized = false;
 
     GLuint m_fontTexture = 0;
