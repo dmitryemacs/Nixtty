@@ -144,6 +144,7 @@ void Terminal::putChar(wchar_t ch) {
     c.fg = m_inverse ? m_currentBg : m_currentFg;
     c.bg = m_inverse ? m_currentFg : m_currentBg;
     c.bold = m_bold;
+    c.italic = m_italic;
     c.inverse = m_inverse;
 
     m_cursor.x++;
@@ -310,6 +311,10 @@ void Terminal::setBold(bool b) {
     m_bold = b;
 }
 
+void Terminal::setItalic(bool i) {
+    m_italic = i;
+}
+
 void Terminal::setInverse(bool inv) {
     m_inverse = inv;
 }
@@ -318,6 +323,7 @@ void Terminal::resetAttributes() {
     m_currentFg = 0xE0E0E0;
     m_currentBg = 0x1A1B26;
     m_bold = false;
+    m_italic = false;
     m_inverse = false;
 }
 

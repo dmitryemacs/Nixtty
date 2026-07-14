@@ -25,7 +25,7 @@ public:
     void present();
     void endFrame();
 
-    void drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool bold);
+    void drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool bold, bool italic);
     void drawCursor(int x, int y, int cellW, int cellH, uint32_t color);
 
     int getCellWidth() const { return m_cellWidth; }
@@ -33,12 +33,13 @@ public:
     bool isInitialized() const { return m_initialized; }
 
 private:
-    bool createFontAtlas(int fbW, int fbH, int winW, int winH);
+    bool createFontAtlas(int fbW, int fbH, int winW, int winH, int fontStyle);
 
     GLFWwindow* m_window = nullptr;
     bool m_initialized = false;
 
-    GLuint m_fontTexture = 0;
+    static const int NUM_STYLES = 4; // regular, bold, italic, bold-italic
+    GLuint m_fontTexture[NUM_STYLES] = {0};
     int m_cellWidth = 0;
     int m_cellHeight = 0;
 
@@ -48,7 +49,7 @@ private:
         float bearX, bearY;
         float glyphW, glyphH;
     };
-    std::unordered_map<wchar_t, GlyphInfo> m_glyphs;
+    std::unordered_map<wchar_t, GlyphInfo> m_glyphs[NUM_STYLES];
 
     int m_atlasTexW = 0;
     int m_atlasTexH = 0;
@@ -62,6 +63,7 @@ private:
         float x, y, w, h;
         float u0, v0, u1, v1;
         uint32_t color;
+        int style;
     };
     std::vector<BgQuad> m_bgBatch;
     std::vector<GlyphQuad> m_glyphBatch;

@@ -480,7 +480,7 @@ static void windowRefreshCallback(GLFWwindow* window) {
                 const std::vector<Cell>* line = g_terminal->getScrollbackLine(srcIdx);
                 if (!line) continue;
                 for (int x = 0; x < cols && x < (int)line->size(); x++) {
-                    g_renderer->drawCell(x, y, (*line)[x].ch, (*line)[x].fg, (*line)[x].bg, (*line)[x].bold);
+                    g_renderer->drawCell(x, y, (*line)[x].ch, (*line)[x].fg, (*line)[x].bg, (*line)[x].bold, (*line)[x].italic);
                 }
             }
 
@@ -489,7 +489,7 @@ static void windowRefreshCallback(GLFWwindow* window) {
             for (int y = 0; y < bufferRows; y++)
                 for (int x = 0; x < cols; x++) {
                     int dstY = visibleScrollback + y;
-                    g_renderer->drawCell(x, dstY, buf[y * cols + x].ch, buf[y * cols + x].fg, buf[y * cols + x].bg, buf[y * cols + x].bold);
+                    g_renderer->drawCell(x, dstY, buf[y * cols + x].ch, buf[y * cols + x].fg, buf[y * cols + x].bg, buf[y * cols + x].bold, buf[y * cols + x].italic);
                 }
         } else {
             // Normal view
@@ -499,7 +499,7 @@ static void windowRefreshCallback(GLFWwindow* window) {
                     uint32_t bg = buf[y * cols + x].bg;
                     if (g_sel.isSelected(x, y))
                         bg = 0x4D6299;
-                    g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold);
+                    g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold, buf[y * cols + x].italic);
                 }
         }
     }

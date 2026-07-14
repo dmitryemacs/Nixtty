@@ -11,6 +11,7 @@ struct Cell {
     uint32_t fg = 0xE0E0E0;
     uint32_t bg = 0x1A1B26;
     bool bold = false;
+    bool italic = false;
     bool inverse = false;
 };
 
@@ -46,6 +47,7 @@ public:
     void setFgColor(uint32_t color);
     void setBgColor(uint32_t color);
     void setBold(bool b);
+    void setItalic(bool i);
     void setInverse(bool inv);
     void resetAttributes();
 
@@ -112,6 +114,7 @@ private:
     uint32_t m_currentFg = 0xE0E0E0;
     uint32_t m_currentBg = 0x1A1B26;
     bool m_bold = false;
+    bool m_italic = false;
     bool m_inverse = false;
 
     int m_scrollTop = 0;

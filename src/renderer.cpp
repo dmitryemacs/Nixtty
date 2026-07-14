@@ -302,9 +302,12 @@ bool Renderer::init(GLFWwindow* window) {
     glfwGetFramebufferSize(window, &fbW, &fbH);
     glfwGetWindowSize(window, &winW, &winH);
 
-    if (!createFontAtlas(fbW, fbH, winW, winH)) {
-        dbg("createFontAtlas FAILED\n");
-        return false;
+    // Create atlases for all 4 styles
+    for (int style = 0; style < NUM_STYLES; style++) {
+        if (!createFontAtlas(fbW, fbH, winW, winH, style)) {
+            dbg("createFontAtlas FAILED for style %d\n", style);
+            return false;
+        }
     }
 
     glEnable(GL_BLEND);
@@ -316,11 +319,13 @@ bool Renderer::init(GLFWwindow* window) {
 }
 
 void Renderer::shutdown() {
-    if (m_fontTexture) { glDeleteTextures(1, &m_fontTexture); m_fontTexture = 0; }
+    for (int i = 0; i < NUM_STYLES; i++) {
+        if (m_fontTexture[i]) { glDeleteTextures(1, &m_fontTexture[i]); m_fontTexture[i] = 0; }
+    }
     m_initialized = false;
 }
 
-bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
+bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH, int fontStyle) {
     float scaleFactor = (float)fbW / (float)winW;
     if (scaleFactor < 1.0f) scaleFactor = 1.0f;
     dbg("Scale factor: %.1f\n", scaleFactor);
@@ -329,8 +334,19 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
     const double atlasFontSize = fontSize * scaleFactor;
     CTFontRef ctFont = nullptr;
 
+    // Select font based on style
+    const char* fontStyleSuffix = "";
+    CTFontSymbolicTraits traits = 0;
+    switch (fontStyle) {
+        case 0: fontStyleSuffix = ""; traits = 0; break; // regular
+        case 1: fontStyleSuffix = " Bold"; traits = kCTFontTraitBold; break; // bold
+        case 2: fontStyleSuffix = " Italic"; traits = kCTFontTraitItalic; break; // italic
+        case 3: fontStyleSuffix = " Bold Italic"; traits = kCTFontTraitBold | kCTFontTraitItalic; break; // bold italic
+    }
+
     for (const char* name : FONT_NAMES) {
-        CFStringRef fontName = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
+        std::string fontNameStr = std::string(name) + fontStyleSuffix;
+        CFStringRef fontName = CFStringCreateWithCString(kCFAllocatorDefault, fontNameStr.c_str(), kCFStringEncodingUTF8);
         ctFont = CTFontCreateWithName(fontName, atlasFontSize, nullptr);
         CFRelease(fontName);
 
@@ -612,16 +628,16 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH) {
         gi.bearY = (float)(rg.bearingY) / scaleFactor;
         gi.glyphW = (float)rg.bbW / scaleFactor;
         gi.glyphH = (float)rg.bbH / scaleFactor;
-        m_glyphs[rg.ch] = gi;
+        m_glyphs[fontStyle][rg.ch] = gi;
     }
 
     CFRelease(ctFont);
     for (CTFontRef f : retainedFonts) CFRelease(f);
 
-    dbg("Font atlas created, glyphs=%d\n", (int)m_glyphs.size());
+    dbg("Font atlas created, glyphs=%d for style %d\n", (int)m_glyphs[fontStyle].size(), fontStyle);
 
-    glGenTextures(1, &m_fontTexture);
-    glBindTexture(GL_TEXTURE_2D, m_fontTexture);
+    glGenTextures(1, &m_fontTexture[fontStyle]);
+    glBindTexture(GL_TEXTURE_2D, m_fontTexture[fontStyle]);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -667,7 +683,7 @@ void Renderer::endFrame() {
     present();
 }
 
-void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool /*bold*/) {
+void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool bold, bool italic) {
     float px = (float)(x * m_cellWidth);
     float py = (float)(y * m_cellHeight);
     float w = (float)m_cellWidth;
@@ -677,8 +693,19 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
 
     if (ch == L' ' || ch == 0) return;
 
-    auto it = m_glyphs.find(ch);
-    if (it == m_glyphs.end()) return;
+    // Select font style: 0=regular, 1=bold, 2=italic, 3=bold+italic
+    int style = 0;
+    if (bold && italic) style = 3;
+    else if (bold) style = 1;
+    else if (italic) style = 2;
+
+    auto it = m_glyphs[style].find(ch);
+    if (it == m_glyphs[style].end()) {
+        // Fallback to regular style
+        it = m_glyphs[0].find(ch);
+        style = 0;
+        if (it == m_glyphs[0].end()) return;
+    }
     const GlyphInfo& gi = it->second;
 
     // Position glyph using bearing offsets (Alacritty-style)
@@ -688,7 +715,7 @@ void Renderer::drawCell(int x, int y, wchar_t ch, uint32_t fg, uint32_t bg, bool
     float gh = gi.glyphH;
 
     m_glyphBatch.push_back({gx, gy, gw, gh,
-                            gi.u0, gi.v0, gi.u1, gi.v1, fg});
+                            gi.u0, gi.v0, gi.u1, gi.v1, fg, style});
 }
 
 void Renderer::flushBgBatch() {
@@ -708,9 +735,16 @@ void Renderer::flushBgBatch() {
 void Renderer::flushGlyphBatch() {
     if (m_glyphBatch.empty()) return;
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, m_fontTexture);
     glBegin(GL_QUADS);
+
+    int lastStyle = -1;
     for (const auto& q : m_glyphBatch) {
+        if (q.style != lastStyle) {
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, m_fontTexture[q.style]);
+            glBegin(GL_QUADS);
+            lastStyle = q.style;
+        }
         glColor4ub((q.color >> 16) & 0xFF, (q.color >> 8) & 0xFF, q.color & 0xFF, 255);
         glTexCoord2f(q.u0, q.v0); glVertex2f(q.x, q.y);
         glTexCoord2f(q.u1, q.v0); glVertex2f(q.x + q.w, q.y);

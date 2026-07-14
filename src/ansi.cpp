@@ -357,10 +357,14 @@ void AnsiParser::executeSgr() {
             m_terminal.setBold(true);
         } else if (code == 2) {
             m_terminal.setBold(false);
+        } else if (code == 3) {
+            m_terminal.setItalic(true);
         } else if (code == 7) {
             m_terminal.setInverse(true);
         } else if (code == 22) {
             m_terminal.setBold(false);
+        } else if (code == 23) {
+            m_terminal.setItalic(false);
         } else if (code == 27) {
             m_terminal.setInverse(false);
         } else if (code >= 30 && code <= 37) {
