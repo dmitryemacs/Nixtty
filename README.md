@@ -1,4 +1,4 @@
-# WinTerm
+# Nixtty
 
 GPU-accelerated terminal emulator for Windows, built with C++17, OpenGL, and ConPTY.
 
