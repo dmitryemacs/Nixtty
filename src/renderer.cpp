@@ -482,8 +482,10 @@ bool Renderer::createFontAtlas(int fbW, int fbH, int winW, int winH, int fontSty
             CTFontRef runFont = ctFont;
             CFDictionaryGetValueIfPresent(runAttrs, kCTFontAttributeName, (const void**)&runFont);
 
-            if (runFont != ctFont) CFRetain(runFont);
-            retainedFonts.push_back(runFont);
+            if (runFont != ctFont) {
+                CFRetain(runFont);
+                retainedFonts.push_back(runFont);
+            }
 
             std::vector<CGGlyph> runGlyphs(glyphCount);
             CTRunGetGlyphs(run, CFRangeMake(0, glyphCount), runGlyphs.data());
