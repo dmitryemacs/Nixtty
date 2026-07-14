@@ -1,30 +1,31 @@
-#include <GLFW/glfw3.h>
+#include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+#include <imm.h>
 #include <string>
 #include <memory>
 #include <cstdio>
-#include <cstring>
 #include <vector>
 #include <algorithm>
-#include <mutex>
 
 #include "terminal.h"
 #include "renderer.h"
 #include "pty.h"
 #include "ansi.h"
-#include "config.h"
 
-static const int DEFAULT_COLS = 80;
-static const int DEFAULT_ROWS = 24;
+static const wchar_t* CLASS_NAME = L"Nixtty";
+static const int DEFAULT_COLS = 100;
+static const int DEFAULT_ROWS = 30;
 
 static std::unique_ptr<Terminal> g_terminal;
 static std::unique_ptr<Renderer> g_renderer;
 static std::unique_ptr<Pty> g_pty;
 static std::unique_ptr<AnsiParser> g_ansi;
-static std::mutex g_lock;
-static GLFWwindow* g_window = nullptr;
+static CRITICAL_SECTION g_lock;
+static HWND g_hwnd = nullptr;
 static FILE* g_log = nullptr;
 static int g_paintCount = 0;
-static Config g_config;
+static wchar_t g_highSurrogate = 0;
 
 struct Selection {
     int startX = -1, startY = -1;
@@ -55,37 +56,47 @@ static void log(const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    OutputDebugStringA(buf);
     if (g_log) { fprintf(g_log, "%s", buf); fflush(g_log); }
 }
 
-static void writeUtf8(unsigned int codepoint) {
+static void writeUtf8(wchar_t ch) {
+    if (ch >= 0xD800 && ch <= 0xDBFF) {
+        g_highSurrogate = ch;
+        return;
+    }
+    if (ch >= 0xDC00 && ch <= 0xDFFF && g_highSurrogate) {
+        uint32_t cp = 0x10000 + ((g_highSurrogate - 0xD800) << 10) + (ch - 0xDC00);
+        g_highSurrogate = 0;
+        char u[5] = {};
+        u[0] = (char)(0xF0 | (cp >> 18));
+        u[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        u[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        u[3] = (char)(0x80 | (cp & 0x3F));
+        g_pty->write(u, 4);
+        return;
+    }
+    g_highSurrogate = 0;
     char u[5] = {};
     size_t len = 0;
-    if (codepoint < 0x80) {
-        u[0] = (char)codepoint; len = 1;
-    } else if (codepoint < 0x800) {
-        u[0] = (char)(0xC0 | (codepoint >> 6));
-        u[1] = (char)(0x80 | (codepoint & 0x3F));
-        len = 2;
-    } else if (codepoint < 0x10000) {
-        u[0] = (char)(0xE0 | (codepoint >> 12));
-        u[1] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
-        u[2] = (char)(0x80 | (codepoint & 0x3F));
-        len = 3;
-    } else {
-        u[0] = (char)(0xF0 | (codepoint >> 18));
-        u[1] = (char)(0x80 | ((codepoint >> 12) & 0x3F));
-        u[2] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
-        u[3] = (char)(0x80 | (codepoint & 0x3F));
-        len = 4;
-    }
+    if (ch < 0x80)      { u[0] = (char)ch; len = 1; }
+    else if (ch < 0x800){ u[0] = (char)(0xC0|(ch>>6)); u[1] = (char)(0x80|(ch&0x3F)); len = 2; }
+    else                { u[0] = (char)(0xE0|(ch>>12)); u[1] = (char)(0x80|((ch>>6)&0x3F)); u[2] = (char)(0x80|(ch&0x3F)); len = 3; }
     g_pty->write(u, len);
 }
 
+static void writeUtf16String(const wchar_t* str, int count) {
+    for (int i = 0; i < count; i++) {
+        writeUtf8(str[i]);
+    }
+}
+
 static void updateWindowSize() {
-    if (!g_window || !g_renderer) return;
-    int width, height;
-    glfwGetWindowSize(g_window, &width, &height);
+    if (!g_hwnd || !g_renderer) return;
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) return;
 
     int cellW = g_renderer->getCellWidth();
@@ -98,59 +109,32 @@ static void updateWindowSize() {
 
     if (cols != g_terminal->getCols() || rows != g_terminal->getRows()) {
         log("Resize: %dx%d -> %dx%d\n", g_terminal->getCols(), g_terminal->getRows(), cols, rows);
-        std::lock_guard<std::mutex> lock(g_lock);
+        EnterCriticalSection(&g_lock);
         g_terminal->resize(cols, rows);
+        LeaveCriticalSection(&g_lock);
         g_pty->resize(cols, rows);
     }
 }
 
-static void mouseToCell(double mx, double my, int& cx, int& cy) {
-    cx = (int)mx / g_renderer->getCellWidth();
-    cy = (int)my / g_renderer->getCellHeight();
+static void sendCharToPty(wchar_t ch) {
+    if (ch == 0) {
+        char nul = 0;
+        g_pty->write(&nul, 1);
+        return;
+    }
+    writeUtf8(ch);
+}
+
+static void mouseToCell(int mx, int my, int& cx, int& cy) {
+    cx = mx / g_renderer->getCellWidth();
+    cy = my / g_renderer->getCellHeight();
     cx = std::clamp(cx, 0, g_terminal->getCols() - 1);
     cy = std::clamp(cy, 0, g_terminal->getRows() - 1);
 }
 
-static void sendMouseEvent(int cx, int cy, int button, int action) {
-    if (!g_pty || !g_terminal || !g_terminal->isMouseTracking()) return;
-
-    // Don't send events if cursor position is out of range
-    if (cx < 0 || cy < 0 || cx >= g_terminal->getCols() || cy >= g_terminal->getRows()) return;
-
-    // Button encoding: 0=left, 1=middle, 2=right, 3=release (X10)
-    int btn = button;
-    if (action == GLFW_RELEASE) btn = 3;
-
-    if (g_terminal->isMouseSGRMode()) {
-        // SGR mode: ESC[<button;col;row;M press, ESC[<button;col;row;m release
-        char buf[32];
-        int len = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
-                          btn, cx + 1, cy + 1,
-                          action == GLFW_RELEASE ? 'm' : 'M');
-        g_pty->write(buf, len);
-    } else {
-        // Normal mode: ESC[M button col row (limited to 223)
-        char buf[6];
-        buf[0] = '\x1b';
-        buf[1] = '[';
-        buf[2] = 'M';
-        buf[3] = (char)(btn + 32);
-        buf[4] = (char)(cx + 33);
-        buf[5] = (char)(cy + 33);
-        g_pty->write(buf, 6);
-    }
-}
-
-static void sendMouseButtonEvent(int cx, int cy, int glfwButton, int action) {
-    int btn = 0;
-    if (glfwButton == GLFW_MOUSE_BUTTON_MIDDLE) btn = 1;
-    else if (glfwButton == GLFW_MOUSE_BUTTON_RIGHT) btn = 2;
-    sendMouseEvent(cx, cy, btn, action);
-}
-
-static std::string getSelectedText() {
+static std::wstring getSelectedText() {
     if (!g_sel.hasSelection()) return {};
-    std::lock_guard<std::mutex> lock(g_lock);
+    EnterCriticalSection(&g_lock);
     const Cell* buf = g_terminal->getBuffer();
     int cols = g_terminal->getCols();
 
@@ -161,456 +145,437 @@ static std::string getSelectedText() {
         std::swap(sy, ey);
     }
 
-    std::string result;
+    std::wstring result;
     for (int y = sy; y <= ey; y++) {
         int lineStart = (y == sy) ? sx : 0;
         int lineEnd = (y == ey) ? ex : cols - 1;
         for (int x = lineStart; x <= lineEnd; x++) {
             wchar_t ch = buf[y * cols + x].ch;
-            // Convert wchar_t to UTF-8
-            unsigned int cp = (unsigned int)ch;
-            if (cp < 0x80) {
-                result += (char)cp;
-            } else if (cp < 0x800) {
-                result += (char)(0xC0 | (cp >> 6));
-                result += (char)(0x80 | (cp & 0x3F));
-            } else if (cp < 0x10000) {
-                result += (char)(0xE0 | (cp >> 12));
-                result += (char)(0x80 | ((cp >> 6) & 0x3F));
-                result += (char)(0x80 | (cp & 0x3F));
-            }
+            result += ch;
         }
-        if (y < ey) result += '\n';
+        if (y < ey) result += L'\n';
     }
+    LeaveCriticalSection(&g_lock);
     return result;
 }
 
 static void copySelectionToClipboard() {
-    std::string text = getSelectedText();
+    std::wstring text = getSelectedText();
     if (text.empty()) return;
-    glfwSetClipboardString(g_window, text.c_str());
-}
-
-// GLFW callbacks
-
-static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
-    if (!g_pty) return;
-
-    bool shift = (mods & GLFW_MOD_SHIFT) != 0;
-    bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
-    bool alt = (mods & GLFW_MOD_ALT) != 0;
-    bool super = (mods & GLFW_MOD_SUPER) != 0;
-
-    // Cmd+C -> copy on macOS (Super modifier)
-    if (super && key == GLFW_KEY_C && g_sel.hasSelection()) {
-        copySelectionToClipboard();
-        g_sel.clear();
-        return;
-    }
-    // Cmd+A -> select all
-    if (super && key == GLFW_KEY_A) {
-        g_sel.startX = 0;
-        g_sel.startY = 0;
-        g_sel.endX = g_terminal->getCols() - 1;
-        g_sel.endY = g_terminal->getRows() - 1;
-        g_sel.selecting = false;
-        return;
-    }
-    // Cmd+V -> paste on macOS
-    if (super && key == GLFW_KEY_V) {
-        const char* clip = glfwGetClipboardString(window);
-        if (clip) {
-            if (g_terminal->isBracketedPaste()) {
-                g_pty->write("\x1b[200~", 6);
-                g_pty->write(clip, strlen(clip));
-                g_pty->write("\x1b[201~", 6);
-            } else {
-                g_pty->write(clip, strlen(clip));
-            }
+    if (OpenClipboard(g_hwnd)) {
+        EmptyClipboard();
+        size_t len = text.size();
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (len + 1) * sizeof(wchar_t));
+        if (hMem) {
+            wchar_t* p = (wchar_t*)GlobalLock(hMem);
+            memcpy(p, text.data(), len * sizeof(wchar_t));
+            p[len] = 0;
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
         }
-        return;
-    }
-
-    // Ctrl+C -> send SIGINT (0x03)
-    if (ctrl && !alt && key == GLFW_KEY_C) {
-        char c = 3;
-        g_pty->write(&c, 1);
-        return;
-    }
-    // Ctrl+Z -> send SIGTSTP
-    if (ctrl && !alt && key == GLFW_KEY_Z) {
-        char c = 26;
-        g_pty->write(&c, 1);
-        return;
-    }
-
-    // Ctrl+A through Ctrl+Z
-    if (ctrl && !alt && key >= GLFW_KEY_A && key <= GLFW_KEY_Z) {
-        char c = (char)(key - GLFW_KEY_A + 1);
-        g_pty->write(&c, 1);
-        return;
-    }
-
-    int mods_num = (shift ? 1 : 0) | (alt ? 2 : 0) | (ctrl ? 4 : 0);
-    int finalMod = 1 + mods_num;
-
-    char seqBuf[16];
-    const char* seq = nullptr;
-    size_t len = 0;
-
-    // Function keys
-    if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F12) {
-        int fi = key - GLFW_KEY_F1;
-        if (fi < 4) {
-            static const char* fbase[] = { "\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS" };
-            if (mods_num == 0) {
-                seq = fbase[fi]; len = 3;
-            } else {
-                int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[1;%d%c", finalMod, 'P' + fi);
-                seq = seqBuf; len = n;
-            }
-        } else {
-            static const int fnums[] = { 15, 17, 18, 19, 20, 21, 23, 24 };
-            if (mods_num == 0) {
-                int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[%d~", fnums[fi - 4]);
-                seq = seqBuf; len = n;
-            } else {
-                int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[%d;%d~", fnums[fi - 4], finalMod);
-                seq = seqBuf; len = n;
-            }
-        }
-    }
-
-    if (!seq) {
-        if (ctrl && !alt && !shift) {
-            switch (key) {
-            case GLFW_KEY_LEFT:   seq = "\x1b[1;5D"; len = 6; break;
-            case GLFW_KEY_RIGHT:  seq = "\x1b[1;5C"; len = 6; break;
-            case GLFW_KEY_UP:     seq = "\x1b[1;5A"; len = 6; break;
-            case GLFW_KEY_DOWN:   seq = "\x1b[1;5B"; len = 6; break;
-            case GLFW_KEY_HOME:   seq = "\x1b[1;5H"; len = 6; break;
-            case GLFW_KEY_END:    seq = "\x1b[1;5F"; len = 6; break;
-            case GLFW_KEY_PAGE_UP:   seq = "\x1b[5;5~"; len = 6; break;
-            case GLFW_KEY_PAGE_DOWN: seq = "\x1b[6;5~"; len = 6; break;
-            }
-        } else if (ctrl && shift) {
-            switch (key) {
-            case GLFW_KEY_LEFT:   seq = "\x1b[1;6D"; len = 6; break;
-            case GLFW_KEY_RIGHT:  seq = "\x1b[1;6C"; len = 6; break;
-            case GLFW_KEY_UP:     seq = "\x1b[1;6A"; len = 6; break;
-            case GLFW_KEY_DOWN:   seq = "\x1b[1;6B"; len = 6; break;
-            case GLFW_KEY_HOME:   seq = "\x1b[1;6H"; len = 6; break;
-            case GLFW_KEY_END:    seq = "\x1b[1;6F"; len = 6; break;
-            }
-        } else if (shift && !ctrl && !alt) {
-            switch (key) {
-            case GLFW_KEY_LEFT:   seq = "\x1b[1;2D"; len = 6; break;
-            case GLFW_KEY_RIGHT:  seq = "\x1b[1;2C"; len = 6; break;
-            case GLFW_KEY_UP:     seq = "\x1b[1;2A"; len = 6; break;
-            case GLFW_KEY_DOWN:   seq = "\x1b[1;2B"; len = 6; break;
-            case GLFW_KEY_HOME:   seq = "\x1b[1;2H"; len = 6; break;
-            case GLFW_KEY_END:    seq = "\x1b[1;2F"; len = 6; break;
-            case GLFW_KEY_DELETE: seq = "\x1b[3;2~"; len = 6; break;
-            case GLFW_KEY_PAGE_UP:   seq = "\x1b[5;2~"; len = 6; break;
-            case GLFW_KEY_PAGE_DOWN: seq = "\x1b[6;2~"; len = 6; break;
-            }
-        } else if (!shift && !ctrl && !alt) {
-            switch (key) {
-            case GLFW_KEY_LEFT:   seq = "\x1b[D"; len = 3; break;
-            case GLFW_KEY_RIGHT:  seq = "\x1b[C"; len = 3; break;
-            case GLFW_KEY_UP:     seq = "\x1b[A"; len = 3; break;
-            case GLFW_KEY_DOWN:   seq = "\x1b[B"; len = 3; break;
-            case GLFW_KEY_HOME:   seq = "\x1b[H"; len = 3; break;
-            case GLFW_KEY_END:    seq = "\x1b[F"; len = 3; break;
-            case GLFW_KEY_DELETE: seq = "\x1b[3~"; len = 4; break;
-            case GLFW_KEY_PAGE_UP:   seq = "\x1b[5~"; len = 4; break;
-            case GLFW_KEY_PAGE_DOWN: seq = "\x1b[6~"; len = 4; break;
-            case GLFW_KEY_INSERT: seq = "\x1b[2~"; len = 4; break;
-            case GLFW_KEY_ENTER:  g_pty->write("\r", 1); return;
-            case GLFW_KEY_BACKSPACE: g_pty->write("\b", 1); return;
-            case GLFW_KEY_TAB:    g_pty->write("\t", 1); return;
-            case GLFW_KEY_ESCAPE: g_pty->write("\x1b", 1); return;
-            }
-        } else if (ctrl && alt) {
-            switch (key) {
-            case GLFW_KEY_LEFT:   seq = "\x1b[1;7D"; len = 6; break;
-            case GLFW_KEY_RIGHT:  seq = "\x1b[1;7C"; len = 6; break;
-            case GLFW_KEY_UP:     seq = "\x1b[1;7A"; len = 6; break;
-            case GLFW_KEY_DOWN:   seq = "\x1b[1;7B"; len = 6; break;
-            case GLFW_KEY_HOME:   seq = "\x1b[1;7H"; len = 6; break;
-            case GLFW_KEY_END:    seq = "\x1b[1;7F"; len = 6; break;
-            }
-        }
-    }
-
-    if (seq) {
-        g_pty->write(seq, len);
-        return;
+        CloseClipboard();
     }
 }
 
-static void charCallback(GLFWwindow* window, unsigned int codepoint) {
-    if (!g_pty) return;
-    writeUtf8(codepoint);
-}
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
 
-static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-    if (!g_renderer || !g_terminal) return;
+    case WM_SIZE:
+        updateWindowSize();
+        return 0;
 
-    double mx, my;
-    glfwGetCursorPos(window, &mx, &my);
-    int cx, cy;
-    mouseToCell(mx, my, cx, cy);
+    case WM_PAINT: {
+        g_paintCount++;
+        if (g_paintCount <= 3 || g_paintCount % 60 == 0)
+            log("WM_PAINT #%d\n", g_paintCount);
 
-    // Send mouse event if tracking is enabled
-    if (g_terminal->isMouseTracking()) {
-        sendMouseButtonEvent(cx, cy, button, action);
-        return;
-    }
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
 
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        if (action == GLFW_PRESS) {
-            g_sel.clear();
-            g_sel.startX = cx;
-            g_sel.startY = cy;
-            g_sel.endX = cx;
-            g_sel.endY = cy;
-            g_sel.selecting = true;
-        } else if (action == GLFW_RELEASE) {
-            if (g_sel.selecting) {
-                g_sel.selecting = false;
-                if (g_sel.startX == g_sel.endX && g_sel.startY == g_sel.endY)
-                    g_sel.clear();
-            }
-        }
-    }
-}
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int w = rc.right - rc.left;
+        int h = rc.bottom - rc.top;
 
-static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
-    if (!g_renderer || !g_terminal) return;
+        if (w > 0 && h > 0 && g_renderer && g_renderer->isInitialized() && g_terminal) {
+            g_renderer->beginFrame(w, h);
 
-    int cx, cy;
-    mouseToCell(xpos, ypos, cx, cy);
-
-    // Send mouse movement event if button-event tracking is enabled
-    if (g_terminal->isMouseTracking() && g_sel.selecting) {
-        // During selection, don't send movement events
-        return;
-    }
-
-    if (g_sel.selecting) {
-        if (cx != g_sel.endX || cy != g_sel.endY) {
-            g_sel.endX = cx;
-            g_sel.endY = cy;
-        }
-    }
-}
-
-static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
-    if (!g_pty || !g_terminal) return;
-    int count = abs((int)yoffset);
-    if (count == 0) count = 1;
-
-    int shiftState = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT);
-    int shiftState2 = glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT);
-    bool shift = (shiftState == GLFW_PRESS) || (shiftState2 == GLFW_PRESS);
-
-    if (shift) {
-        std::lock_guard<std::mutex> lock(g_lock);
-        if (yoffset > 0) {
-            g_terminal->scrollBack(count);
-        } else {
-            g_terminal->scrollForward(count);
-        }
-    } else {
-        // Send scroll events if tracking is enabled
-        if (g_terminal->isMouseTracking()) {
-            double mx, my;
-            glfwGetCursorPos(window, &mx, &my);
-            int cx, cy;
-            mouseToCell(mx, my, cx, cy);
-            // Scroll up = button 64, scroll down = button 65
-            int btn = (yoffset > 0) ? 64 : 65;
-            for (int i = 0; i < count; i++) {
-                sendMouseEvent(cx, cy, btn, GLFW_PRESS);
-            }
-        } else {
-            if (g_terminal->isScrolledBack()) {
-                std::lock_guard<std::mutex> lock(g_lock);
-                g_terminal->scrollToBottom();
-            }
-            const char* seq = (yoffset > 0) ? "\x1b[5~" : "\x1b[6~";
-            for (int i = 0; i < count; i++) g_pty->write(seq, 4);
-        }
-    }
-}
-
-static void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
-    updateWindowSize();
-}
-
-static void windowRefreshCallback(GLFWwindow* window) {
-    if (!g_renderer || !g_renderer->isInitialized() || !g_terminal) return;
-
-    int fbWidth, fbHeight;
-    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-    if (fbWidth <= 0 || fbHeight <= 0) return;
-
-    int winWidth, winHeight;
-    glfwGetWindowSize(window, &winWidth, &winHeight);
-
-    g_paintCount++;
-
-    g_renderer->beginFrame(fbWidth, fbHeight, winWidth, winHeight);
-
-    {
-        std::lock_guard<std::mutex> lock(g_lock);
-        int cols = g_terminal->getCols();
-        int rows = g_terminal->getRows();
-        int scrollOffset = g_terminal->getScrollOffset();
-        int scrollbackLines = g_terminal->getScrollbackLines();
-
-        if (scrollOffset > 0 && scrollbackLines > 0) {
-            // Scrolled back: show scrollback lines at top, current buffer at bottom
-            int visibleScrollback = std::min(scrollOffset, rows);
-            int bufferRows = rows - visibleScrollback;
-
-            // Draw scrollback lines
-            for (int y = 0; y < visibleScrollback; y++) {
-                int srcIdx = scrollbackLines - scrollOffset + y;
-                const std::vector<Cell>* line = g_terminal->getScrollbackLine(srcIdx);
-                if (!line) continue;
-                for (int x = 0; x < cols && x < (int)line->size(); x++) {
-                    g_renderer->drawCell(x, y, (*line)[x].ch, (*line)[x].fg, (*line)[x].bg, (*line)[x].bold, (*line)[x].italic);
-                }
-            }
-
-            // Draw current buffer (shifted down)
+            EnterCriticalSection(&g_lock);
             const Cell* buf = g_terminal->getBuffer();
-            for (int y = 0; y < bufferRows; y++)
-                for (int x = 0; x < cols; x++) {
-                    int dstY = visibleScrollback + y;
-                    g_renderer->drawCell(x, dstY, buf[y * cols + x].ch, buf[y * cols + x].fg, buf[y * cols + x].bg, buf[y * cols + x].bold, buf[y * cols + x].italic);
-                }
-        } else {
-            // Normal view
-            const Cell* buf = g_terminal->getBuffer();
+            int cols = g_terminal->getCols();
+            int rows = g_terminal->getRows();
+            Cursor cur = g_terminal->getCursor();
+
             for (int y = 0; y < rows; y++)
                 for (int x = 0; x < cols; x++) {
                     uint32_t bg = buf[y * cols + x].bg;
                     if (g_sel.isSelected(x, y))
                         bg = 0x4D6299;
-                    g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold, buf[y * cols + x].italic);
+                    g_renderer->drawCell(x, y, buf[y * cols + x].ch, buf[y * cols + x].fg, bg, buf[y * cols + x].bold);
                 }
-        }
-    }
+            LeaveCriticalSection(&g_lock);
 
-    g_renderer->flushBatches();
+            g_renderer->flushBatches();
 
-    // Cursor blink
-    double time = glfwGetTime();
-    Cursor cur = g_terminal->getCursor();
-    if (cur.visible && ((int)(time * 2.0) & 1) == 0)
-        g_renderer->drawCursor(cur.x, cur.y, g_renderer->getCellWidth(), g_renderer->getCellHeight(), 0xFFFFFF);
+            if (cur.visible && ((GetTickCount() / 500) & 1) == 0)
+                g_renderer->drawCursor(cur.x, cur.y, g_renderer->getCellWidth(), g_renderer->getCellHeight(), 0xFFFFFF);
 
-    g_renderer->present();
-}
-
-int main(int argc, char* argv[]) {
-    // Open log file
-    g_log = fopen("nixtty.log", "w");
-    log("=== START (macOS) ===\n");
-
-    if (!glfwInit()) {
-        log("GLFW init failed\n");
-        return 1;
-    }
-
-    // Load config from ~/.config/nixtty/config.toml
-    std::string configPath;
-    const char* home = getenv("HOME");
-    if (home) {
-        configPath = std::string(home) + "/.config/nixtty/config.toml";
-        if (g_config.loadFromFile(configPath)) {
-            log("Loaded config from %s\n", configPath.c_str());
+            g_renderer->present();
         } else {
-            // Try local config.toml
-            if (g_config.loadFromFile("config.toml")) {
-                log("Loaded config from config.toml\n");
+            log("WM_PAINT skip: w=%d h=%d rend=%d init=%d term=%d\n",
+                w, h, !!g_renderer, g_renderer ? g_renderer->isInitialized() : 0, !!g_terminal);
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_KEYDOWN: {
+        if (!g_pty) return 0;
+
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        bool altGr = ctrl && alt;
+
+        char seqBuf[16];
+        const char* seq = nullptr;
+        size_t len = 0;
+
+        int mods = (shift ? 1 : 0) | (alt ? 2 : 0) | (ctrl ? 4 : 0);
+        int finalMod = 1 + mods;
+
+        if (ctrl && !alt && wParam == 'C' && g_sel.hasSelection()) {
+            copySelectionToClipboard();
+            g_sel.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (ctrl && !alt && wParam == 'A') {
+            g_sel.startX = 0;
+            g_sel.startY = 0;
+            g_sel.endX = g_terminal->getCols() - 1;
+            g_sel.endY = g_terminal->getRows() - 1;
+            g_sel.selecting = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (ctrl && !alt && wParam >= 'A' && wParam <= 'Z') {
+            char c = (char)(wParam - 'A' + 1);
+            g_pty->write(&c, 1);
+            return 0;
+        }
+        if (ctrl && !alt && wParam >= 'a' && wParam <= 'z') {
+            char c = (char)(wParam - 'a' + 1);
+            g_pty->write(&c, 1);
+            return 0;
+        }
+        if (ctrl && !alt && wParam == VK_SPACE) {
+            char nul = 0;
+            g_pty->write(&nul, 1);
+            return 0;
+        }
+
+        if (wParam >= VK_F1 && wParam <= VK_F12) {
+            int fi = wParam - VK_F1;
+            if (fi < 4) {
+                static const char* fbase[] = { "\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS" };
+                if (mods == 0) {
+                    seq = fbase[fi]; len = 3;
+                } else {
+                    int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[1;%d%c", finalMod, 'P' + fi);
+                    seq = seqBuf; len = n;
+                }
+            } else {
+                static const int fnums[] = { 15, 17, 18, 19, 20, 21, 23, 24 };
+                if (mods == 0) {
+                    int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[%d~", fnums[fi - 4]);
+                    seq = seqBuf; len = n;
+                } else {
+                    int n = snprintf(seqBuf, sizeof(seqBuf), "\x1b[%d;%d~", fnums[fi - 4], finalMod);
+                    seq = seqBuf; len = n;
+                }
             }
         }
+
+        if (!seq) {
+            bool ext = (lParam >> 24) & 1;
+            if (!ext) {
+                if (ctrl && !alt && !shift) {
+                    switch (wParam) {
+                    case VK_LEFT:   seq = "\x1b[1;5D"; len = 6; break;
+                    case VK_RIGHT:  seq = "\x1b[1;5C"; len = 6; break;
+                    case VK_UP:     seq = "\x1b[1;5A"; len = 6; break;
+                    case VK_DOWN:   seq = "\x1b[1;5B"; len = 6; break;
+                    case VK_HOME:   seq = "\x1b[1;5H"; len = 6; break;
+                    case VK_END:    seq = "\x1b[1;5F"; len = 6; break;
+                    case VK_PRIOR:  seq = "\x1b[5;5~"; len = 6; break;
+                    case VK_NEXT:   seq = "\x1b[6;5~"; len = 6; break;
+                    }
+                } else if (ctrl && shift) {
+                    switch (wParam) {
+                    case VK_LEFT:   seq = "\x1b[1;6D"; len = 6; break;
+                    case VK_RIGHT:  seq = "\x1b[1;6C"; len = 6; break;
+                    case VK_UP:     seq = "\x1b[1;6A"; len = 6; break;
+                    case VK_DOWN:   seq = "\x1b[1;6B"; len = 6; break;
+                    case VK_HOME:   seq = "\x1b[1;6H"; len = 6; break;
+                    case VK_END:    seq = "\x1b[1;6F"; len = 6; break;
+                    }
+                } else if (shift && !ctrl && !alt) {
+                    switch (wParam) {
+                    case VK_LEFT:   seq = "\x1b[1;2D"; len = 6; break;
+                    case VK_RIGHT:  seq = "\x1b[1;2C"; len = 6; break;
+                    case VK_UP:     seq = "\x1b[1;2A"; len = 6; break;
+                    case VK_DOWN:   seq = "\x1b[1;2B"; len = 6; break;
+                    case VK_HOME:   seq = "\x1b[1;2H"; len = 6; break;
+                    case VK_END:    seq = "\x1b[1;2F"; len = 6; break;
+                    case VK_DELETE: seq = "\x1b[3;2~"; len = 6; break;
+                    case VK_PRIOR:  seq = "\x1b[5;2~"; len = 6; break;
+                    case VK_NEXT:   seq = "\x1b[6;2~"; len = 6; break;
+                    }
+                } else if (!shift && !ctrl && !alt) {
+                    switch (wParam) {
+                    case VK_LEFT:   seq = "\x1b[D"; len = 3; break;
+                    case VK_RIGHT:  seq = "\x1b[C"; len = 3; break;
+                    case VK_UP:     seq = "\x1b[A"; len = 3; break;
+                    case VK_DOWN:   seq = "\x1b[B"; len = 3; break;
+                    case VK_HOME:   seq = "\x1b[H"; len = 3; break;
+                    case VK_END:    seq = "\x1b[F"; len = 3; break;
+                    case VK_DELETE: seq = "\x1b[3~"; len = 4; break;
+                    case VK_PRIOR:  seq = "\x1b[5~"; len = 4; break;
+                    case VK_NEXT:   seq = "\x1b[6~"; len = 4; break;
+                    case VK_INSERT: seq = "\x1b[2~"; len = 4; break;
+                    case VK_RETURN: g_pty->write("\r", 1); return 0;
+                    case VK_BACK:   g_pty->write("\b", 1); return 0;
+                    case VK_TAB:    g_pty->write("\t", 1); return 0;
+                    case VK_ESCAPE: g_pty->write("\x1b", 1); return 0;
+                    }
+                } else if (ctrl && alt) {
+                    switch (wParam) {
+                    case VK_LEFT:   seq = "\x1b[1;7D"; len = 6; break;
+                    case VK_RIGHT:  seq = "\x1b[1;7C"; len = 6; break;
+                    case VK_UP:     seq = "\x1b[1;7A"; len = 6; break;
+                    case VK_DOWN:   seq = "\x1b[1;7B"; len = 6; break;
+                    case VK_HOME:   seq = "\x1b[1;7H"; len = 6; break;
+                    case VK_END:    seq = "\x1b[1;7F"; len = 6; break;
+                    }
+                }
+            }
+        }
+
+        if (seq) {
+            g_pty->write(seq, len);
+            return 0;
+        }
+
+        return 0;
     }
 
-    // Request OpenGL 2.1 (compatible with legacy profile for GL 1.1 calls)
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE);
-    glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+    case WM_SYSKEYDOWN: {
+        if (!g_pty) return 0;
 
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+
+        if (ctrl) return DefWindowProcW(hwnd, msg, wParam, lParam);
+
+        if (wParam == VK_F1)  { g_pty->write("\x1bOP", 3); return 0; }
+        if (wParam == VK_F2)  { g_pty->write("\x1bOQ", 3); return 0; }
+        if (wParam == VK_F3)  { g_pty->write("\x1bOR", 3); return 0; }
+        if (wParam == VK_F4)  { g_pty->write("\x1bOS", 3); return 0; }
+
+        const char* seq = nullptr;
+        size_t len = 0;
+        switch (wParam) {
+        case VK_LEFT:   seq = "\x1b[1;3D"; len = 6; break;
+        case VK_RIGHT:  seq = "\x1b[1;3C"; len = 6; break;
+        case VK_UP:     seq = "\x1b[1;3A"; len = 6; break;
+        case VK_DOWN:   seq = "\x1b[1;3B"; len = 6; break;
+        case VK_HOME:   seq = "\x1b[1;3H"; len = 6; break;
+        case VK_END:    seq = "\x1b[1;3F"; len = 6; break;
+        case VK_PRIOR:  seq = "\x1b[5;3~"; len = 6; break;
+        case VK_NEXT:   seq = "\x1b[6;3~"; len = 6; break;
+        }
+        if (seq) { g_pty->write(seq, len); return 0; }
+
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    case WM_CHAR: {
+        if (!g_pty) return 0;
+        wchar_t ch = (wchar_t)wParam;
+        if (ch >= 32) {
+            writeUtf8(ch);
+        }
+        return 0;
+    }
+
+    case WM_SYSCHAR: {
+        if (!g_pty) return 0;
+        wchar_t ch = (wchar_t)wParam;
+        if (ch >= 32) {
+            char esc = '\x1b';
+            g_pty->write(&esc, 1);
+            writeUtf8(ch);
+        }
+        return 0;
+    }
+
+    case WM_IME_CHAR: {
+        if (!g_pty) return 0;
+        wchar_t ch = (wchar_t)wParam;
+        writeUtf8(ch);
+        return 0;
+    }
+
+    case WM_IME_COMPOSITION: {
+        if (!g_pty) return 0;
+        if (lParam & GCS_RESULTSTR) {
+            HIMC hIMC = ImmGetContext(hwnd);
+            if (hIMC) {
+                LONG len = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, nullptr, 0);
+                if (len > 0) {
+                    std::vector<wchar_t> buf(len / sizeof(wchar_t));
+                    ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, buf.data(), len);
+                    writeUtf16String(buf.data(), (int)buf.size());
+                }
+                ImmReleaseContext(hwnd, hIMC);
+            }
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN: {
+        if (!g_renderer || !g_terminal) return 0;
+        SetCapture(hwnd);
+        g_sel.clear();
+        mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), g_sel.startX, g_sel.startY);
+        g_sel.endX = g_sel.startX;
+        g_sel.endY = g_sel.startY;
+        g_sel.selecting = true;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        if (!g_sel.selecting || !g_renderer || !g_terminal) return 0;
+        int cx, cy;
+        mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+        if (cx != g_sel.endX || cy != g_sel.endY) {
+            g_sel.endX = cx;
+            g_sel.endY = cy;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (!g_sel.selecting) return 0;
+        g_sel.selecting = false;
+        ReleaseCapture();
+        if (g_sel.startX == g_sel.endX && g_sel.startY == g_sel.endY)
+            g_sel.clear();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+        if (!g_pty) return 0;
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const char* seq = (delta > 0) ? "\x1b[5~" : "\x1b[6~";
+        int count = abs(delta / WHEEL_DELTA);
+        if (count == 0) count = 1;
+        for (int i = 0; i < count; i++) g_pty->write(seq, 4);
+        return 0;
+    }
+
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        int cw = g_renderer ? g_renderer->getCellWidth() : 9;
+        int ch = g_renderer ? g_renderer->getCellHeight() : 18;
+        mmi->ptMinTrackSize.x = cw * 20;
+        mmi->ptMinTrackSize.y = ch * 5;
+        return 0;
+    }
+
+    case WM_MOUSEACTIVATE:
+        SetFocus(hwnd);
+        return MA_ACTIVATE;
+
+    case WM_TIMER:
+        if (wParam == 1) InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+    {
+        typedef BOOL (WINAPI *PFN_SetProcessDpiAwarenessContext)(HANDLE);
+        auto fn = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(
+            GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
+        if (fn) fn((HANDLE)-4);
+    }
+
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    wchar_t* sl = wcsrchr(exePath, L'\\');
+    if (sl) { wcscpy(sl + 1, L"nixtty.log"); g_log = _wfopen(exePath, L"w"); }
+
+    log("=== START ===\n");
+    pty_set_log_file(g_log);
+    renderer_set_log_file(g_log);
+
+    InitializeCriticalSection(&g_lock);
     g_terminal = std::make_unique<Terminal>(DEFAULT_COLS, DEFAULT_ROWS);
     g_renderer = std::make_unique<Renderer>();
     g_pty = std::make_unique<Pty>();
     g_ansi = std::make_unique<AnsiParser>(*g_terminal);
 
-    g_window = glfwCreateWindow(800, 600, "Nixtty", nullptr, nullptr);
-    if (!g_window) {
-        log("Window creation failed\n");
-        glfwTerminate();
-        return 1;
-    }
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_IBEAM);
+    wc.lpszClassName = CLASS_NAME;
+    RegisterClassExW(&wc);
 
-    glfwMakeContextCurrent(g_window);
-    glfwSwapInterval(1); // VSync
+    g_hwnd = CreateWindowExW(0, CLASS_NAME, L"Nixtty", WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        nullptr, nullptr, hInstance, nullptr);
+    if (!g_hwnd) { log("CreateWindow failed\n"); return 1; }
 
-    // Set callbacks
-    glfwSetKeyCallback(g_window, keyCallback);
-    glfwSetCharCallback(g_window, charCallback);
-    glfwSetMouseButtonCallback(g_window, mouseButtonCallback);
-    glfwSetCursorPosCallback(g_window, cursorPosCallback);
-    glfwSetScrollCallback(g_window, scrollCallback);
-    glfwSetFramebufferSizeCallback(g_window, framebufferSizeCallback);
-    glfwSetWindowRefreshCallback(g_window, windowRefreshCallback);
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(g_hwnd, 20, &dark, sizeof(dark));
 
-    renderer_set_log_file(g_log);
-    if (!g_renderer->init(g_window)) {
+    if (!g_renderer->init(g_hwnd)) {
         log("RENDERER INIT FAILED\n");
-        glfwDestroyWindow(g_window);
-        glfwTerminate();
+        MessageBoxW(g_hwnd, L"OpenGL init failed", L"Nixtty", MB_ICONERROR);
         return 1;
     }
 
-    // Set initial window size - fill ~70% of screen
     int cw = g_renderer->getCellWidth();
     int ch = g_renderer->getCellHeight();
-    int winW, winH;
-
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    if (monitor) {
-        int mx, my, mw, mh;
-        glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
-        winW = (int)(mw * 0.7);
-        winH = (int)(mh * 0.7);
-    } else {
-        winW = DEFAULT_COLS * cw + 16;
-        winH = DEFAULT_ROWS * ch + 39;
-    }
-
-    glfwSetWindowSize(g_window, winW, winH);
-    log("Window: %dx%d, cell: %dx%d, screen: %dx%d\n", winW, winH, cw, ch,
-        monitor ? glfwGetVideoMode(monitor)->width : 0,
-        monitor ? glfwGetVideoMode(monitor)->height : 0);
+    int winW = DEFAULT_COLS * cw + 16;
+    int winH = DEFAULT_ROWS * ch + 39;
+    SetWindowPos(g_hwnd, nullptr, 0, 0, winW, winH, SWP_NOMOVE | SWP_NOZORDER);
 
     log("Setting up PTY callbacks\n");
     g_pty->onData = [](const char* data, size_t len) {
         log("onData: %d bytes\n", (int)len);
-        std::lock_guard<std::mutex> lock(g_lock);
+        EnterCriticalSection(&g_lock);
         g_ansi->parse(data, len);
-        glfwPostEmptyEvent();
+        LeaveCriticalSection(&g_lock);
+        InvalidateRect(g_hwnd, nullptr, FALSE);
     };
-    g_pty->onExit = []() {
-        glfwSetWindowShouldClose(g_window, GLFW_TRUE);
-    };
+    g_pty->onExit = []() { PostMessage(g_hwnd, WM_CLOSE, 0, 0); };
 
     g_ansi->onWrite = [](const char* data, size_t len) {
         g_pty->write(data, len);
@@ -623,32 +588,32 @@ int main(int argc, char* argv[]) {
     log("Spawning shell\n");
     if (!g_pty->spawn()) {
         log("PTY SPAWN FAILED\n");
-        glfwDestroyWindow(g_window);
-        glfwTerminate();
+        MessageBoxW(g_hwnd, L"Shell spawn failed", L"Nixtty", MB_ICONERROR);
         return 1;
     }
 
     updateWindowSize();
-    glfwPostEmptyEvent();
+    ShowWindow(g_hwnd, nCmdShow);
+    UpdateWindow(g_hwnd);
+    SetTimer(g_hwnd, 1, 500, nullptr);
 
-    log("Entering main loop\n");
+    log("Entering message loop\n");
 
-    // Main loop
-    while (!glfwWindowShouldClose(g_window)) {
-        glfwWaitEvents();
-
-        // Schedule periodic redraws for cursor blink
-        glfwPostEmptyEvent();
-
-        windowRefreshCallback(g_window);
+    MSG msg;
+    while (true) {
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) goto done;
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        WaitMessage();
     }
 
+done:
     log("Shutting down\n");
     g_pty->close();
     g_renderer->shutdown();
-    glfwDestroyWindow(g_window);
-    glfwTerminate();
-
+    DeleteCriticalSection(&g_lock);
     log("=== END (paints=%d) ===\n", g_paintCount);
     if (g_log) fclose(g_log);
     return 0;
