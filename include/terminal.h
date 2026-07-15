@@ -6,6 +6,8 @@
 #include <vector>
 #include <functional>
 
+#include "unicode.h"
+
 struct Cell {
     wchar_t ch = L' ';
     uint32_t fg = 0xE0E0E0;
@@ -13,6 +15,7 @@ struct Cell {
     bool bold = false;
     bool italic = false;
     bool inverse = false;
+    uint8_t width = 1;  // Character display width: 1 or 2 (for CJK/emoji)
 };
 
 struct Cursor {

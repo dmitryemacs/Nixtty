@@ -12,6 +12,7 @@ set(COMMON_SOURCES
     src/renderer.cpp
     src/ansi.cpp
     src/config.cpp
+    src/unicode.cpp
 )
 
 if(APPLE)
@@ -37,6 +38,7 @@ if(APPLE)
         src/pty_posix.cpp
     )
     target_include_directories(nixtty PRIVATE include)
+    target_compile_definitions(nixtty PRIVATE GL_SILENCE_DEPRECATION)
     target_link_libraries(nixtty PRIVATE
         glfw
         OpenGL::GL

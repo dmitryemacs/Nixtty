@@ -1,4 +1,5 @@
 #include "terminal.h"
+#include "unicode.h"
 #include <algorithm>
 #include <cstring>
 
@@ -146,13 +147,51 @@ void Terminal::putChar(wchar_t ch) {
     c.bold = m_bold;
     c.italic = m_italic;
     c.inverse = m_inverse;
+    
+    // Set character width based on Unicode properties
+    // Convert wchar_t to uint32_t for unicode_width function
+    uint32_t cp = static_cast<uint32_t>(ch);
+    // Handle surrogate pairs: if high surrogate, we'll treat as width 2 for now
+    // (proper handling would require tracking pairs, but this prevents crashes)
+    if (cp >= 0xD800 && cp <= 0xDBFF) {
+        c.width = 2;  // High surrogate - assume wide
+    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+        c.width = 0;  // Low surrogate - will be handled with high surrogate
+    } else {
+        int w = unicode_width(cp);
+        c.width = (w <= 0) ? 1 : static_cast<uint8_t>(w);
+    }
 
-    m_cursor.x++;
+    // Move cursor by character width, but ensure we don't overflow
+    int advance = c.width;
+    m_cursor.x += advance;
+    
+    // If cursor went past end of line due to wide character, wrap to next line
+    if (m_cursor.x > m_cols) {
+        m_cursor.x = 0;
+        m_cursor.y++;
+        if (m_cursor.y > m_scrollBottom) {
+            scrollUp(1);
+            m_cursor.y = m_scrollBottom;
+        }
+        if (m_cursor.y >= m_rows) {
+            m_cursor.y = m_rows - 1;
+        }
+    }
 }
 
 void Terminal::backspace() {
     if (m_cursor.x > 0) {
-        m_cursor.x--;
+        // Move back by the width of the previous character
+        // But at minimum, move back by 1
+        int prevX = m_cursor.x - 1;
+        if (prevX >= 0 && prevX < m_cols) {
+            const Cell& prevCell = cellAt(prevX, m_cursor.y);
+            m_cursor.x -= std::max(1, static_cast<int>(prevCell.width));
+        } else {
+            m_cursor.x--;
+        }
+        if (m_cursor.x < 0) m_cursor.x = 0;
     }
 }
 
