@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <vector>
 #include <algorithm>
+#include <thread>
 
 #include "terminal.h"
 #include "renderer.h"
@@ -202,8 +203,12 @@ static void copySelectionToClipboard() {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CLOSE:
+        g_ptyExitRequested = true;
+        // Закрываем PTY в отдельном потоке, чтобы не блокировать GUI
         if (g_pty && !g_pty->isClosing()) {
-            g_pty->close();
+            std::thread([p = g_pty.get()]() {
+                p->close();
+            }).detach();
         }
         DestroyWindow(hwnd);
         return 0;
@@ -855,9 +860,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         InvalidateRect(g_hwnd, nullptr, FALSE);
     };
     g_pty->onExit = []() { 
-        // Повышаем запрос на закрытие
-        g_ptyExitRequested = true;
-        if (g_hwnd) {
+        // Уведомляем главное окно о завершении PTY
+        // Проверяем, что окно еще существует и не уничтожается
+        if (g_hwnd && !g_ptyExitRequested) {
+            g_ptyExitRequested = true;
             PostMessage(g_hwnd, WM_USER + 1, 0, 0);
         }
     };
@@ -900,7 +906,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
 done:
     log("Shutting down\n");
-    g_pty->close();
     g_renderer->shutdown();
     DeleteCriticalSection(&g_lock);
     log("=== END (paints=%d) ===\n", g_paintCount);

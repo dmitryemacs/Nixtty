@@ -1,8 +1,16 @@
 #include "pty.h"
 #include <cstdio>
+#include <chrono>
+#include <thread>
 
 Pty::Pty() : m_running(false), m_closing(false) {}
-Pty::~Pty() { close(); }
+Pty::~Pty() { 
+    close();
+    // Отсоединяем поток если он все еще активен, чтобы избежать use-after-free
+    if (m_readThread.joinable()) {
+        m_readThread.detach();
+    }
+}
 
 static FILE* pty_log_file = nullptr;
 
@@ -186,11 +194,17 @@ void Pty::close() {
     m_closing = true;
     m_running = false;
     
+    // Сначала терминируем процесс
+    if (m_process != INVALID_HANDLE_VALUE) {
+        TerminateProcess(m_process, 1);
+        CloseHandle(m_process);
+        m_process = INVALID_HANDLE_VALUE;
+    }
+    
     // Закрываем хендлы чтобы readThread завершился сам
-    // Не вызываем join() чтобы избежать deadlock
+    // Не ждем поток здесь, чтобы не блокировать GUI
     if (m_inputWrite != INVALID_HANDLE_VALUE) { CloseHandle(m_inputWrite); m_inputWrite = INVALID_HANDLE_VALUE; }
     if (m_outputRead != INVALID_HANDLE_VALUE) { CloseHandle(m_outputRead); m_outputRead = INVALID_HANDLE_VALUE; }
     if (m_conpty) { ClosePseudoConsole(m_conpty); m_conpty = nullptr; }
-    if (m_process != INVALID_HANDLE_VALUE) { TerminateProcess(m_process, 1); CloseHandle(m_process); m_process = INVALID_HANDLE_VALUE; }
     if (m_thread != INVALID_HANDLE_VALUE) { CloseHandle(m_thread); m_thread = INVALID_HANDLE_VALUE; }
 }
