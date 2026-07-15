@@ -142,7 +142,12 @@ void AnsiParser::processChar(wchar_t ch) {
 
     case STATE_OSC:
         if (ch == L'\x07' || ch == L'\x1b') {
+            if (m_sequence.size() > 0) {
+                executeOsc();
+            }
             m_state = STATE_GROUND;
+        } else {
+            m_sequence.push_back(ch);
         }
         break;
 
@@ -322,6 +327,90 @@ void AnsiParser::executeCsi() {
     }
 }
 
+void AnsiParser::executeOsc() {
+    if (m_sequence.empty()) return;
+
+    std::wstring seq(m_sequence.begin(), m_sequence.end());
+
+    size_t semi = seq.find(L';');
+    if (semi == std::wstring::npos) return;
+
+    int cmd = 0;
+    for (size_t i = 0; i < semi; i++) {
+        if (seq[i] >= L'0' && seq[i] <= L'9') {
+            cmd = cmd * 10 + (seq[i] - L'0');
+        }
+    }
+
+    if (cmd == 4) {
+        size_t pos = semi + 1;
+        while (pos < seq.size() && seq[pos] == L' ') pos++;
+
+        int colorIdx = 0;
+        while (pos < seq.size() && seq[pos] >= L'0' && seq[pos] <= L'9') {
+            colorIdx = colorIdx * 10 + (seq[pos] - L'0');
+            pos++;
+        }
+        if (pos < seq.size() && seq[pos] == L';') pos++;
+
+        std::wstring spec;
+        while (pos < seq.size()) {
+            spec += seq[pos++];
+        }
+
+        if (colorIdx >= 0 && colorIdx < 16 && !spec.empty()) {
+                if (spec[0] == L'#') {
+                uint32_t color = 0;
+                if (spec[0] == L'#') {
+                    size_t start = 1;
+                    if (spec.size() >= 7) {
+                        uint32_t r = 0, g = 0, b = 0;
+                        for (int i = 0; i < 2; i++) {
+                            wchar_t c = spec[start + i];
+                            r = (r << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                        }
+                        for (int i = 0; i < 2; i++) {
+                            wchar_t c = spec[start + 2 + i];
+                            g = (g << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                        }
+                        for (int i = 0; i < 2; i++) {
+                            wchar_t c = spec[start + 4 + i];
+                            b = (b << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                        }
+                        color = (r << 16) | (g << 8) | b;
+                    }
+                }
+                if (spec.substr(0, 4) == L"rgb:") {
+                    size_t start = 4;
+                    uint32_t r = 0, g = 0, b = 0;
+                    int shift = 8;
+                    for (int i = 0; i < 2 && start + i < spec.size(); i++) {
+                        wchar_t c = spec[start + i];
+                        r = (r << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                    }
+                    start += 2;
+                    if (start < spec.size() && spec[start] == L'/') start++;
+                    for (int i = 0; i < 2 && start + i < spec.size(); i++) {
+                        wchar_t c = spec[start + i];
+                        g = (g << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                    }
+                    start += 2;
+                    if (start < spec.size() && spec[start] == L'/') start++;
+                    for (int i = 0; i < 2 && start + i < spec.size(); i++) {
+                        wchar_t c = spec[start + i];
+                        b = (b << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                    }
+                    color = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    } else if (cmd == 10 || cmd == 11) {
+        // OSC 10/11: set fg/bg - parse but ignore for now
+    } else if (cmd == 0 || cmd == 2) {
+        // Window title - ignored
+    }
+}
+
 static const uint32_t ANSI_COLORS[] = {
     0x1A1B26,
     0xF7768E,
@@ -356,13 +445,14 @@ void AnsiParser::executeSgr() {
         } else if (code == 1) {
             m_terminal.setBold(true);
         } else if (code == 2) {
-            m_terminal.setBold(false);
+            m_terminal.setDim(true);
         } else if (code == 3) {
             m_terminal.setItalic(true);
         } else if (code == 7) {
             m_terminal.setInverse(true);
         } else if (code == 22) {
             m_terminal.setBold(false);
+            m_terminal.setDim(false);
         } else if (code == 23) {
             m_terminal.setItalic(false);
         } else if (code == 27) {

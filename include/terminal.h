@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include "unicode.h"
+
+static const int MAX_COMBINED = 5;
 
 struct Cell {
     wchar_t ch = L' ';
@@ -13,6 +16,10 @@ struct Cell {
     bool bold = false;
     bool italic = false;
     bool inverse = false;
+    bool dim = false;
+    uint8_t width = 1;
+    wchar_t combined[MAX_COMBINED] = {};
+    int combinedCount = 0;
 };
 
 struct Cursor {
@@ -47,6 +54,7 @@ public:
     void setFgColor(uint32_t color);
     void setBgColor(uint32_t color);
     void setBold(bool b);
+    void setDim(bool d);
     void setItalic(bool i);
     void setInverse(bool inv);
     void resetAttributes();
@@ -100,6 +108,7 @@ public:
 
     std::function<void(const char*, size_t)> onWrite;
     std::function<void(int, int)> onResize;
+    std::function<void()> onBufferSwitch;
 
 private:
     Cell& cellAt(int x, int y);
@@ -114,6 +123,7 @@ private:
     uint32_t m_currentFg = 0xE0E0E0;
     uint32_t m_currentBg = 0x1A1B26;
     bool m_bold = false;
+    bool m_dim = false;
     bool m_italic = false;
     bool m_inverse = false;
 

@@ -18,6 +18,7 @@ private:
     void processChar(wchar_t ch);
     void executeCsi();
     void executeSgr();
+    void executeOsc();
     void writeResponse(const char* data, size_t len);
 
     Terminal& m_terminal;

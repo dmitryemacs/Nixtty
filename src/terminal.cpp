@@ -1,4 +1,5 @@
 #include "terminal.h"
+#include "unicode.h"
 #include <algorithm>
 #include <cstring>
 
@@ -127,6 +128,19 @@ void Terminal::write(const wchar_t* data, size_t len) {
 }
 
 void Terminal::putChar(wchar_t ch) {
+    uint32_t cp = static_cast<uint32_t>(ch);
+    int w = ucsWidth(cp);
+
+    if (w == 0) {
+        if (m_cursor.x > 0) {
+            Cell& prev = cellAt(m_cursor.x - 1, m_cursor.y);
+            if (prev.combinedCount < MAX_COMBINED) {
+                prev.combined[prev.combinedCount++] = ch;
+            }
+        }
+        return;
+    }
+
     if (m_cursor.x >= m_cols) {
         m_cursor.x = 0;
         m_cursor.y++;
@@ -139,15 +153,41 @@ void Terminal::putChar(wchar_t ch) {
         m_cursor.y = m_rows - 1;
     }
 
+    if (w == 2 && m_cursor.x + 1 >= m_cols) {
+        Cell& c = cellAt(m_cursor.x, m_cursor.y);
+        c = Cell{};
+        c.ch = L' ';
+        c.fg = m_inverse ? m_currentBg : m_currentFg;
+        c.bg = m_inverse ? m_currentFg : m_currentBg;
+        m_cursor.x = 0;
+        m_cursor.y++;
+        if (m_cursor.y > m_scrollBottom) {
+            scrollUp(1);
+            m_cursor.y = m_scrollBottom;
+        }
+        if (m_cursor.y >= m_rows) {
+            m_cursor.y = m_rows - 1;
+        }
+    }
+
     Cell& c = cellAt(m_cursor.x, m_cursor.y);
     c.ch = ch;
     c.fg = m_inverse ? m_currentBg : m_currentFg;
     c.bg = m_inverse ? m_currentFg : m_currentBg;
     c.bold = m_bold;
+    c.dim = m_dim;
     c.italic = m_italic;
     c.inverse = m_inverse;
+    c.width = static_cast<uint8_t>(w);
+    c.combinedCount = 0;
 
-    m_cursor.x++;
+    m_cursor.x += w;
+
+    if (w == 2 && m_cursor.x <= m_cols) {
+        Cell& trail = cellAt(m_cursor.x - 1, m_cursor.y);
+        trail.width = 0;
+        trail.ch = 0;
+    }
 }
 
 void Terminal::backspace() {
@@ -311,6 +351,10 @@ void Terminal::setBold(bool b) {
     m_bold = b;
 }
 
+void Terminal::setDim(bool d) {
+    m_dim = d;
+}
+
 void Terminal::setItalic(bool i) {
     m_italic = i;
 }
@@ -323,6 +367,7 @@ void Terminal::resetAttributes() {
     m_currentFg = 0xE0E0E0;
     m_currentBg = 0x1A1B26;
     m_bold = false;
+    m_dim = false;
     m_italic = false;
     m_inverse = false;
 }
@@ -350,6 +395,7 @@ void Terminal::switchToAlternateBuffer() {
     m_cursor = Cursor{};
     m_scrollTop = 0;
     m_scrollBottom = m_rows - 1;
+    if (onBufferSwitch) onBufferSwitch();
 }
 
 void Terminal::switchToMainBuffer() {
@@ -359,6 +405,7 @@ void Terminal::switchToMainBuffer() {
     m_scrollTop = m_mainScrollTop;
     m_scrollBottom = m_mainScrollBottom;
     m_altScreen = false;
+    if (onBufferSwitch) onBufferSwitch();
 }
 
 Cell& Terminal::cellAt(int x, int y) {
