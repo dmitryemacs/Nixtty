@@ -113,11 +113,3 @@ PTY read pipe -> UTF-8 decode -> ANSI parse -> Terminal buffer
                                                     |
                                                  Screen
 ```
-
-### Branches
-
-| Branch | Description |
-|--------|-------------|
-| `main` | Core platform-independent code |
-| `macos` | macOS port (GLFW + Core Text) |
-| `windows` | Windows build (Win32 API + ConPTY) |
