@@ -51,6 +51,7 @@ public:
     bool write(const char* data, size_t len);
 
     bool isRunning() const { return m_running; }
+    bool isClosing() const { return m_closing; }
 
     std::function<void(const char*, size_t)> onData;
     std::function<void()> onExit;
@@ -65,6 +66,7 @@ private:
     HPCON m_conpty = nullptr;
 
     std::atomic<bool> m_running{false};
+    std::atomic<bool> m_closing{false};
     std::thread m_readThread;
 
     int m_cols = 80;

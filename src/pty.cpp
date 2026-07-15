@@ -1,7 +1,7 @@
 #include "pty.h"
 #include <cstdio>
 
-Pty::Pty() = default;
+Pty::Pty() : m_running(false), m_closing(false) {}
 Pty::~Pty() { close(); }
 
 static FILE* pty_log_file = nullptr;
@@ -135,6 +135,15 @@ void Pty::readThread() {
     ptylog("ReadThread started, handle=%p, running=%d\n", m_outputRead, (int)m_running.load());
     char buffer[4096];
     while (m_running) {
+        // Check if process has exited
+        if (m_process != INVALID_HANDLE_VALUE) {
+            DWORD exitCode = 0;
+            if (GetExitCodeProcess(m_process, &exitCode) && exitCode != STILL_ACTIVE) {
+                ptylog("Process exited with code %d\n", (int)exitCode);
+                break;
+            }
+        }
+        
         DWORD bytesRead = 0;
         BOOL success = ReadFile(m_outputRead, buffer, sizeof(buffer), &bytesRead, nullptr);
 
@@ -152,7 +161,10 @@ void Pty::readThread() {
     }
     m_running = false;
     ptylog("ReadThread exit\n");
-    if (onExit) onExit();
+    // Notify main thread that pty process has exited
+    if (onExit && !m_closing) {
+        onExit();
+    }
 }
 
 void Pty::resize(int cols, int rows) {
@@ -170,11 +182,15 @@ bool Pty::write(const char* data, size_t len) {
 }
 
 void Pty::close() {
+    if (m_closing) return;
+    m_closing = true;
     m_running = false;
+    
+    // Закрываем хендлы чтобы readThread завершился сам
+    // Не вызываем join() чтобы избежать deadlock
     if (m_inputWrite != INVALID_HANDLE_VALUE) { CloseHandle(m_inputWrite); m_inputWrite = INVALID_HANDLE_VALUE; }
     if (m_outputRead != INVALID_HANDLE_VALUE) { CloseHandle(m_outputRead); m_outputRead = INVALID_HANDLE_VALUE; }
     if (m_conpty) { ClosePseudoConsole(m_conpty); m_conpty = nullptr; }
     if (m_process != INVALID_HANDLE_VALUE) { TerminateProcess(m_process, 1); CloseHandle(m_process); m_process = INVALID_HANDLE_VALUE; }
     if (m_thread != INVALID_HANDLE_VALUE) { CloseHandle(m_thread); m_thread = INVALID_HANDLE_VALUE; }
-    if (m_readThread.joinable()) m_readThread.join();
 }
