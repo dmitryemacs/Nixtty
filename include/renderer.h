@@ -5,9 +5,42 @@
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
+#include <functional>
 #include <cstdio>
 
 struct Cell;
+
+struct GlyphKey {
+    wchar_t character;
+    int fontSize;
+    bool operator==(const GlyphKey& o) const {
+        return character == o.character && fontSize == o.fontSize;
+    }
+};
+
+namespace std {
+    template<> struct hash<GlyphKey> {
+        size_t operator()(const GlyphKey& k) const {
+            size_t h1 = hash<wchar_t>()(k.character);
+            size_t h2 = hash<int>()(k.fontSize);
+            return h1 ^ (h2 * 0x9e3779b97f4a7c15ULL + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+        }
+    };
+}
+
+struct Glyph {
+    GLuint tex_id;
+    float u0, v0, u1, v1;
+    int width, height;
+};
+
+struct Atlas {
+    GLuint texture = 0;
+    static const int SIZE = 1024;
+    int row_extent = 0;
+    int row_baseline = 0;
+    int row_tallest = 0;
+};
 
 class Renderer {
 public:
@@ -33,37 +66,27 @@ public:
     int getFontSize() const { return m_fontSize; }
 
 private:
-    bool createFontAtlas(HDC hdc);
-    bool createFallbackAtlas(HDC hdc);
-    void addGlyphToAtlas(HDC hdc, HFONT hFont, wchar_t ch);
-    void renderCombinedGlyphs(HDC hdc, HFONT hFont, int x, int y, const Cell& cell, uint32_t fg);
+    Glyph* getGlyph(wchar_t ch);
+    Glyph insertGlyph(int glyph_w, int glyph_h, const uint8_t* rgba_data);
+    void loadCommonGlyphs();
+    void clearGlyphCache();
+    void measureCellSize();
+    void createGDIScratchpad(HDC hdc, HFONT hFont);
+    void destroyGDIScratchpad();
 
     HWND m_hwnd = nullptr;
     HDC m_hdc = nullptr;
     HGLRC m_hglrc = nullptr;
     bool m_initialized = false;
 
-    GLuint m_fontTexture = 0;
     int m_cellWidth = 0;
     int m_cellHeight = 0;
     int m_fontSize = 16;
 
-    struct GlyphInfo {
-        float u0, v0, u1, v1;
-        int width, height;
-    };
-    std::unordered_map<wchar_t, GlyphInfo> m_glyphs;
+    std::vector<Atlas> m_atlases;
+    int m_currentAtlas = 0;
+    std::unordered_map<GlyphKey, Glyph> m_glyphCache;
 
-    int m_atlasTexW = 0;
-    int m_atlasTexH = 0;
-    static const int ATLAS_COLS = 128;
-
-    GLuint m_fallbackTexture = 0;
-    int m_fallbackTexW = 0;
-    int m_fallbackTexH = 0;
-    std::unordered_map<wchar_t, GlyphInfo> m_fallbackGlyphs;
-    bool m_hasFallback = false;
-    int m_fallbackAtlasRow = 0;
     HDC m_fallbackMemDC = nullptr;
     HGDIOBJ m_fallbackOldBmp = nullptr;
     HGDIOBJ m_fallbackOldFont = nullptr;
@@ -78,6 +101,7 @@ private:
         float x, y, w, h;
         float u0, v0, u1, v1;
         uint32_t color;
+        GLuint tex_id;
     };
     std::vector<BgQuad> m_bgBatch;
     std::vector<GlyphQuad> m_glyphBatch;
