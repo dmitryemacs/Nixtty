@@ -247,6 +247,26 @@ static void copySelectionToClipboard() {
     }
 }
 
+static void pasteFromClipboard() {
+    if (OpenClipboard(g_hwnd)) {
+        HGLOBAL hMem = GetClipboardData(CF_UNICODETEXT);
+        if (hMem) {
+            wchar_t* p = (wchar_t*)GlobalLock(hMem);
+            if (p) {
+                if (g_terminal->isBracketedPaste()) {
+                    g_pty->write("\x1b[200~", 6);
+                    writeUtf16String(p, (int)wcslen(p));
+                    g_pty->write("\x1b[201~", 6);
+                } else {
+                    writeUtf16String(p, (int)wcslen(p));
+                }
+                GlobalUnlock(hMem);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CLOSE:
@@ -383,24 +403,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (ctrl && shift && wParam == 'V') {
-            // Paste from clipboard
-            if (OpenClipboard(hwnd)) {
-                HGLOBAL hMem = GetClipboardData(CF_UNICODETEXT);
-                if (hMem) {
-                    wchar_t* p = (wchar_t*)GlobalLock(hMem);
-                    if (p) {
-                        if (g_terminal->isBracketedPaste()) {
-                            g_pty->write("\x1b[200~", 6);
-                            writeUtf16String(p, (int)wcslen(p));
-                            g_pty->write("\x1b[201~", 6);
-                        } else {
-                            writeUtf16String(p, (int)wcslen(p));
-                        }
-                        GlobalUnlock(hMem);
-                    }
-                }
-                CloseClipboard();
-            }
+            pasteFromClipboard();
             return 0;
         }
         if (ctrl && shift && wParam == 'A') {
@@ -689,6 +692,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
             sendMouseEvent(cx, cy, 2, 0);
             return 0;
+        }
+        if (g_sel.hasSelection()) {
+            copySelectionToClipboard();
+            g_sel.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else {
+            pasteFromClipboard();
         }
         return 0;
     }
