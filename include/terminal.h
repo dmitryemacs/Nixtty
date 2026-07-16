@@ -11,8 +11,8 @@ static const int MAX_COMBINED = 5;
 
 struct Cell {
     wchar_t ch = L' ';
-    uint32_t fg = 0xE0E0E0;
-    uint32_t bg = 0x1A1B26;
+    uint32_t fg = 0xFFFFFF;
+    uint32_t bg = 0x1E1E1E;
     bool bold = false;
     bool italic = false;
     bool inverse = false;
@@ -31,7 +31,7 @@ struct Cursor {
 
 class Terminal {
 public:
-    Terminal(int cols, int rows);
+    Terminal(int cols, int rows, int scrollbackLimit = 10000);
     ~Terminal();
 
     bool resize(int cols, int rows);
@@ -124,15 +124,15 @@ private:
     std::vector<Cell> m_buffer;
     Cursor m_cursor;
 
-    uint32_t m_currentFg = 0xE0E0E0;
-    uint32_t m_currentBg = 0x1A1B26;
+    uint32_t m_currentFg = 0xFFFFFF;
+    uint32_t m_currentBg = 0x1E1E1E;
     bool m_bold = false;
     bool m_dim = false;
     bool m_italic = false;
     bool m_inverse = false;
 
-    uint32_t m_defaultFg = 0xE0E0E0;
-    uint32_t m_defaultBg = 0x1A1B26;
+    uint32_t m_defaultFg = 0xFFFFFF;
+    uint32_t m_defaultBg = 0x1E1E1E;
 
     int m_scrollTop = 0;
     int m_scrollBottom = 0;
@@ -148,7 +148,7 @@ private:
     int m_mainScrollBottom = 0;
 
     // Scrollback buffer
-    static const int SCROLLBACK_LIMIT = 10000;
+    int m_scrollbackLimit;
     std::vector<std::vector<Cell>> m_scrollback;
     int m_scrollOffset = 0; // 0 = at bottom, >0 = scrolled back
 

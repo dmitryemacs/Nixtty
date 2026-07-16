@@ -52,6 +52,11 @@ bool Config::loadFromFile(const std::string& path) {
         else if (key == "cursor") cursor = parseColor(value);
         else if (key == "selection") selection = parseColor(value);
         else if (key == "opacity") opacity = std::stof(value);
+        else if (key == "cols") cols = std::stoi(value);
+        else if (key == "rows") rows = std::stoi(value);
+        else if (key == "scrollback") scrollback = std::stoi(value);
+        else if (key == "cursor_blink") cursorBlink = (value == "true" || value == "1");
+        else if (key == "cursor_blink_ms") cursorBlinkMs = std::stoi(value);
         else if (key.substr(0, 5) == "color") {
             int idx = std::stoi(key.substr(5));
             if (idx >= 0 && idx < 16) {

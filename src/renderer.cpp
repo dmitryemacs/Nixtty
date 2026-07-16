@@ -6,8 +6,8 @@
 #include <cmath>
 
 static const wchar_t* FONT_NAMES[] = {
-    L"Hack Nerd Font Mono",
     L"Hack Nerd Font",
+    L"Hack Nerd Font Mono",
     L"Consolas",
     L"Courier New",
 };
@@ -137,27 +137,54 @@ void Renderer::destroyGDIScratchpad() {
 
 void Renderer::measureCellSize() {
     HFONT hFont = nullptr;
-    for (const wchar_t* name : FONT_NAMES) {
+
+    // Try configured font family first
+    if (!m_fontFamily.empty()) {
         hFont = CreateFontW(
             -m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, name
+            CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, m_fontFamily.c_str()
         );
-        if (!hFont) continue;
-
-        HDC hdc = GetDC(m_hwnd);
-        HGDIOBJ old = SelectObject(hdc, hFont);
-        SIZE sz = {};
-        GetTextExtentPoint32W(hdc, L"X", 1, &sz);
-        SelectObject(hdc, old);
-        ReleaseDC(m_hwnd, hdc);
-
-        if (sz.cx >= 4) {
-            dbg("Font selected: %S (width=%d)\n", name, sz.cx);
-            break;
+        if (hFont) {
+            HDC hdc = GetDC(m_hwnd);
+            HGDIOBJ old = SelectObject(hdc, hFont);
+            SIZE sz = {};
+            GetTextExtentPoint32W(hdc, L"X", 1, &sz);
+            SelectObject(hdc, old);
+            ReleaseDC(m_hwnd, hdc);
+            if (sz.cx < 4) {
+                DeleteObject(hFont);
+                hFont = nullptr;
+            } else {
+                dbg("Font selected: %S (width=%d)\n", m_fontFamily.c_str(), sz.cx);
+            }
         }
-        DeleteObject(hFont);
-        hFont = nullptr;
+    }
+
+    // Fallback to built-in list
+    if (!hFont) {
+        for (const wchar_t* name : FONT_NAMES) {
+            hFont = CreateFontW(
+                -m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, name
+            );
+            if (!hFont) continue;
+
+            HDC hdc = GetDC(m_hwnd);
+            HGDIOBJ old = SelectObject(hdc, hFont);
+            SIZE sz = {};
+            GetTextExtentPoint32W(hdc, L"X", 1, &sz);
+            SelectObject(hdc, old);
+            ReleaseDC(m_hwnd, hdc);
+
+            if (sz.cx >= 4) {
+                dbg("Font selected: %S (width=%d)\n", name, sz.cx);
+                break;
+            }
+            DeleteObject(hFont);
+            hFont = nullptr;
+        }
     }
     if (!hFont) {
         dbg("Using fallback Consolas\n");
@@ -337,10 +364,11 @@ void Renderer::setFontSize(int size) {
     clearGlyphCache();
 
     // Recreate GDI scratchpad for new cell dimensions
+    const wchar_t* fontName = !m_fontFamily.empty() ? m_fontFamily.c_str() : FONT_NAMES[0];
     HFONT hFont = CreateFontW(
         -m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, FONT_NAMES[0]
+        CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, fontName
     );
     if (!hFont) {
         hFont = CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -354,6 +382,36 @@ void Renderer::setFontSize(int size) {
 
     dbg("Font size changed to %d, new cell=%dx%d, glyphs=%d\n",
         m_fontSize, m_cellWidth, m_cellHeight, (int)m_glyphCache.size());
+}
+
+// --- setFontFamily ---
+
+void Renderer::setFontFamily(const std::wstring& family) {
+    if (family == m_fontFamily) return;
+
+    dbg("Changing font family to %S\n", family.c_str());
+
+    destroyGDIScratchpad();
+
+    m_fontFamily = family;
+    measureCellSize();
+    clearGlyphCache();
+
+    const wchar_t* fontName = !m_fontFamily.empty() ? m_fontFamily.c_str() : FONT_NAMES[0];
+    HFONT hFont = CreateFontW(
+        -m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, fontName
+    );
+    if (!hFont) {
+        hFont = CreateFontW(-m_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_NATURAL_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    }
+    createGDIScratchpad(m_hdc, hFont);
+    DeleteObject(hFont);
+
+    loadCommonGlyphs();
 }
 
 // --- shutdown ---
@@ -385,7 +443,7 @@ void Renderer::beginFrame(int width, int height) {
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    glClearColor(0.102f, 0.106f, 0.149f, 1.0f);
+    glClearColor(0.118f, 0.118f, 0.118f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     m_bgBatch.clear();

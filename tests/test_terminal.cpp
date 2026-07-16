@@ -403,7 +403,7 @@ TEST(terminal_resetAttributes) {
     t.resetAttributes();
     t.putChar(L'X');
     const Cell* buf = t.getBuffer();
-    ASSERT_EQ(buf[0].fg, 0xE0E0E0); // default
+    ASSERT_EQ(buf[0].fg, 0xFFFFFF); // default
     ASSERT_FALSE(buf[0].bold);
 }
 

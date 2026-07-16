@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cstring>
 
-Terminal::Terminal(int cols, int rows)
-    : m_cols(cols), m_rows(rows)
+Terminal::Terminal(int cols, int rows, int scrollbackLimit)
+    : m_cols(cols), m_rows(rows), m_scrollbackLimit(scrollbackLimit)
 {
     m_scrollBottom = m_rows - 1;
     ensureCapacity();
@@ -46,6 +46,8 @@ void Terminal::clear() {
     }
     m_cursor.x = 0;
     m_cursor.y = 0;
+    m_scrollTop = 0;
+    m_scrollBottom = m_rows - 1;
 }
 
 void Terminal::scrollUp(int lines) {
@@ -222,14 +224,23 @@ void Terminal::tab() {
 }
 
 void Terminal::eraseToEndOfLine() {
-    for (int x = m_cursor.x; x < m_cols; x++) {
-        cellAt(x, m_cursor.y) = Cell{};
+    int x = m_cursor.x;
+    // If cursor is on a trailing cell of a wide char, back up to include the main cell
+    if (x > 0 && cellAt(x, m_cursor.y).width == 0) {
+        x--;
+    }
+    for (int i = x; i < m_cols; i++) {
+        cellAt(i, m_cursor.y) = Cell{};
     }
 }
 
 void Terminal::eraseToStartOfLine() {
     for (int x = 0; x <= m_cursor.x; x++) {
         cellAt(x, m_cursor.y) = Cell{};
+    }
+    // Also clear trailing cell if cursor is on a wide char
+    if (m_cursor.x < m_cols - 1 && cellAt(m_cursor.x, m_cursor.y).width == 2) {
+        cellAt(m_cursor.x + 1, m_cursor.y) = Cell{};
     }
 }
 
@@ -259,6 +270,8 @@ void Terminal::eraseToStartOfScreen() {
 
 void Terminal::eraseScreen() {
     clear();
+    m_scrollTop = 0;
+    m_scrollBottom = m_rows - 1;
 }
 
 void Terminal::eraseChars(int count) {
@@ -429,7 +442,7 @@ void Terminal::ensureCapacity() {
 
 void Terminal::pushToScrollback(const std::vector<Cell>& line) {
     m_scrollback.push_back(line);
-    if ((int)m_scrollback.size() > SCROLLBACK_LIMIT) {
+    if ((int)m_scrollback.size() > m_scrollbackLimit) {
         m_scrollback.erase(m_scrollback.begin());
     }
 }

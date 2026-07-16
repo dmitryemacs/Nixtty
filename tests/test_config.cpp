@@ -107,7 +107,7 @@ TEST(config_emptyFile) {
 TEST(config_full) {
     Config c;
     writeFile("_test_full.toml",
-        "family = \"Hack Nerd Font Mono\"\n"
+        "family = \"Hack Nerd Font\"\n"
         "size = 18\n"
         "background = \"#1A1B26\"\n"
         "foreground = \"#C0CAF5\"\n"
@@ -117,7 +117,7 @@ TEST(config_full) {
         "color0 = \"#000000\"\n"
         "color7 = \"#FFFFFF\"\n");
     ASSERT_TRUE(c.loadFromFile("_test_full.toml"));
-    ASSERT_STREQ(c.fontFamily.c_str(), "Hack Nerd Font Mono");
+    ASSERT_STREQ(c.fontFamily.c_str(), "Hack Nerd Font");
     ASSERT_EQ(c.fontSize, 18);
     ASSERT_EQ(c.background, (uint32_t)0x1A1B26);
     ASSERT_EQ(c.foreground, (uint32_t)0xC0CAF5);
@@ -141,7 +141,52 @@ TEST(config_defaults) {
     Config c;
     // Without loading any file, defaults should be set
     ASSERT_EQ(c.fontSize, 16);
-    ASSERT_EQ(c.background, (uint32_t)0x1A1B26);
-    ASSERT_EQ(c.foreground, (uint32_t)0xC0CAF5);
+    ASSERT_EQ(c.background, (uint32_t)0x1E1E1E);
+    ASSERT_EQ(c.foreground, (uint32_t)0xFFFFFF);
     ASSERT_FLOAT_EQ(c.opacity, 1.0f);
+    ASSERT_EQ(c.cols, 100);
+    ASSERT_EQ(c.rows, 30);
+    ASSERT_EQ(c.scrollback, 10000);
+    ASSERT_EQ(c.cursorBlink, true);
+    ASSERT_EQ(c.cursorBlinkMs, 500);
+}
+
+TEST(config_terminal_cols) {
+    Config c;
+    writeFile("_test_cols.toml", "cols = 120\n");
+    ASSERT_TRUE(c.loadFromFile("_test_cols.toml"));
+    ASSERT_EQ(c.cols, 120);
+    remove("_test_cols.toml");
+}
+
+TEST(config_terminal_rows) {
+    Config c;
+    writeFile("_test_rows.toml", "rows = 40\n");
+    ASSERT_TRUE(c.loadFromFile("_test_rows.toml"));
+    ASSERT_EQ(c.rows, 40);
+    remove("_test_rows.toml");
+}
+
+TEST(config_terminal_scrollback) {
+    Config c;
+    writeFile("_test_sb.toml", "scrollback = 50000\n");
+    ASSERT_TRUE(c.loadFromFile("_test_sb.toml"));
+    ASSERT_EQ(c.scrollback, 50000);
+    remove("_test_sb.toml");
+}
+
+TEST(config_terminal_cursorBlink) {
+    Config c;
+    writeFile("_test_blink.toml", "cursor_blink = false\n");
+    ASSERT_TRUE(c.loadFromFile("_test_blink.toml"));
+    ASSERT_EQ(c.cursorBlink, false);
+    remove("_test_blink.toml");
+}
+
+TEST(config_terminal_cursorBlinkMs) {
+    Config c;
+    writeFile("_test_blinkms.toml", "cursor_blink_ms = 300\n");
+    ASSERT_TRUE(c.loadFromFile("_test_blinkms.toml"));
+    ASSERT_EQ(c.cursorBlinkMs, 300);
+    remove("_test_blinkms.toml");
 }
