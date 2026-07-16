@@ -361,24 +361,22 @@ void AnsiParser::executeOsc() {
         if (colorIdx >= 0 && colorIdx < 16 && !spec.empty()) {
                 if (spec[0] == L'#') {
                 uint32_t color = 0;
-                if (spec[0] == L'#') {
-                    size_t start = 1;
-                    if (spec.size() >= 7) {
-                        uint32_t r = 0, g = 0, b = 0;
-                        for (int i = 0; i < 2; i++) {
-                            wchar_t c = spec[start + i];
-                            r = (r << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
-                        }
-                        for (int i = 0; i < 2; i++) {
-                            wchar_t c = spec[start + 2 + i];
-                            g = (g << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
-                        }
-                        for (int i = 0; i < 2; i++) {
-                            wchar_t c = spec[start + 4 + i];
-                            b = (b << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
-                        }
-                        color = (r << 16) | (g << 8) | b;
+                size_t start = 1;
+                if (spec.size() >= 7) {
+                    uint32_t r = 0, g = 0, b = 0;
+                    for (int i = 0; i < 2; i++) {
+                        wchar_t c = spec[start + i];
+                        r = (r << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
                     }
+                    for (int i = 0; i < 2; i++) {
+                        wchar_t c = spec[start + 2 + i];
+                        g = (g << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                    }
+                    for (int i = 0; i < 2; i++) {
+                        wchar_t c = spec[start + 4 + i];
+                        b = (b << 4) | (c >= L'A' ? (c - L'A' + 10) : (c - L'0'));
+                    }
+                    color = (r << 16) | (g << 8) | b;
                 }
                 if (spec.substr(0, 4) == L"rgb:") {
                     size_t start = 4;
@@ -411,7 +409,7 @@ void AnsiParser::executeOsc() {
     }
 }
 
-static const uint32_t ANSI_COLORS[] = {
+static uint32_t ANSI_COLORS[] = {
     0x1A1B26,
     0xF7768E,
     0x9ECE6A,
@@ -429,6 +427,12 @@ static const uint32_t ANSI_COLORS[] = {
     0x7DCFFF,
     0xC0CAF5,
 };
+
+void AnsiParser::setAnsiColor(int index, uint32_t color) {
+    if (index >= 0 && index < 16) {
+        ANSI_COLORS[index] = color;
+    }
+}
 
 void AnsiParser::executeSgr() {
     if (m_params.empty()) {
@@ -489,7 +493,7 @@ void AnsiParser::executeSgr() {
                 }
             }
         } else if (code == 39) {
-            m_terminal.setFgColor(0xA9B1D6);
+            m_terminal.setFgColor(m_terminal.getDefaultFg());
         } else if (code >= 40 && code <= 47) {
             m_terminal.setBgColor(ANSI_COLORS[code - 40]);
         } else if (code == 48) {
@@ -522,7 +526,7 @@ void AnsiParser::executeSgr() {
                 }
             }
         } else if (code == 49) {
-            m_terminal.setBgColor(0x1A1B26);
+            m_terminal.setBgColor(m_terminal.getDefaultBg());
         }
 
         i++;
