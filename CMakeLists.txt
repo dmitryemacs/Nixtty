@@ -47,3 +47,24 @@ add_custom_target(resource_file DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/app.res.o)
 add_dependencies(nixtty resource_file)
 
 target_link_libraries(nixtty PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/app.res.o)
+
+# Tests
+add_executable(nixtty_tests
+    tests/main.cpp
+    tests/test_unicode.cpp
+    tests/test_terminal.cpp
+    tests/test_ansi.cpp
+    tests/test_config.cpp
+    src/unicode.cpp
+    src/terminal.cpp
+    src/ansi.cpp
+    src/config.cpp
+)
+
+target_include_directories(nixtty_tests PRIVATE include tests)
+target_compile_definitions(nixtty_tests PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
