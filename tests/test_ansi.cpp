@@ -299,7 +299,7 @@ TEST(ansi_sgr_fgColor) {
     p.parse("\x1b[31m", 5); // red
     t.putChar(L'X');
     const Cell* buf = t.getBuffer();
-    ASSERT_EQ(buf[0].fg, 0xF7768E); // ANSI red from default palette
+    ASSERT_EQ(buf[0].fg, 0xCC0000); // ANSI red from default palette
 }
 
 TEST(ansi_sgr_bgColor) {
@@ -308,7 +308,7 @@ TEST(ansi_sgr_bgColor) {
     p.parse("\x1b[44m", 5); // blue bg
     t.putChar(L'X');
     const Cell* buf = t.getBuffer();
-    ASSERT_EQ(buf[0].bg, 0x7AA2F7); // ANSI blue
+    ASSERT_EQ(buf[0].bg, 0x3465A4); // ANSI blue
 }
 
 TEST(ansi_sgr_256color_fg) {
@@ -450,4 +450,74 @@ TEST(ansi_cursorPosition_report) {
     };
     p.parse("\x1b[6n", 4); // DSR
     ASSERT_STREQ(response.c_str(), "\x1b[3;5R");
+}
+
+TEST(ansi_dcs_consumed) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    // DCS: ESC P ... BEL - payload should be consumed, not printed
+    p.parse("\x1bPtmux;\x1bPabc\x07text", 17);
+    const Cell* buf = t.getBuffer();
+    ASSERT_EQ(buf[0].ch, L't');
+    ASSERT_EQ(buf[1].ch, L'e');
+    ASSERT_EQ(buf[2].ch, L'x');
+    ASSERT_EQ(buf[3].ch, L't');
+}
+
+TEST(ansi_dcs_ST_terminator) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    // DCS terminated by ESC \ (ST)
+    p.parse("\x1bP+q1b44\x1b\\after", 17);
+    const Cell* buf = t.getBuffer();
+    ASSERT_EQ(buf[0].ch, L'a');
+    ASSERT_EQ(buf[1].ch, L'f');
+    ASSERT_EQ(buf[2].ch, L't');
+    ASSERT_EQ(buf[3].ch, L'e');
+    ASSERT_EQ(buf[4].ch, L'r');
+}
+
+TEST(ansi_csi_intermediateSpace) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    // DECSCUSR: CSI 4 SP q (cursor shape) - 'q' should not leak
+    p.parse("\x1b[4 q", 5);
+    // Cursor should still be at origin, no 'q' printed
+    Cursor cur = t.getCursor();
+    ASSERT_EQ(cur.x, 0);
+    ASSERT_EQ(cur.y, 0);
+}
+
+TEST(ansi_da1_response) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    std::string response;
+    p.onWrite = [&](const char* data, size_t len) {
+        response.assign(data, len);
+    };
+    p.parse("\x1b[c", 3); // DA1
+    ASSERT_STREQ(response.c_str(), "\x1b[?1;2c");
+}
+
+TEST(ansi_da2_response) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    std::string response;
+    p.onWrite = [&](const char* data, size_t len) {
+        response.assign(data, len);
+    };
+    p.parse("\x1b[>c", 4); // DA2
+    ASSERT_STREQ(response.c_str(), "\x1b[>0;10;1c");
+}
+
+TEST(ansi_osc_ST_terminator) {
+    Terminal t(10, 3);
+    AnsiParser p(t);
+    // OSC terminated by ESC \ (ST) instead of BEL
+    p.parse("\x1b]0;title\x1b\\rest", 15);
+    const Cell* buf = t.getBuffer();
+    ASSERT_EQ(buf[0].ch, L'r');
+    ASSERT_EQ(buf[1].ch, L'e');
+    ASSERT_EQ(buf[2].ch, L's');
+    ASSERT_EQ(buf[3].ch, L't');
 }
