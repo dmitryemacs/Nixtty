@@ -11,6 +11,7 @@ add_executable(nixtty WIN32
     src/pty.cpp
     src/ansi.cpp
     src/unicode.cpp
+    src/config.cpp
 )
 
 target_include_directories(nixtty PRIVATE include)
@@ -33,7 +34,7 @@ target_compile_definitions(nixtty PRIVATE
     NOMINMAX
 )
 
-set(WINDRES "D:/Qt/Tools/llvm-mingw1706_64/bin/x86_64-w64-mingw32-windres.exe")
+find_program(WINDRES x86_64-w64-mingw32-windres REQUIRED)
 
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/app.res.o

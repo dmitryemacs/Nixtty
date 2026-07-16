@@ -59,6 +59,10 @@ public:
     void setInverse(bool inv);
     void resetAttributes();
 
+    void setDefaultColors(uint32_t defaultFg, uint32_t defaultBg);
+    uint32_t getDefaultFg() const { return m_defaultFg; }
+    uint32_t getDefaultBg() const { return m_defaultBg; }
+
     void putChar(wchar_t ch);
     void backspace();
     void newline();
@@ -126,6 +130,9 @@ private:
     bool m_dim = false;
     bool m_italic = false;
     bool m_inverse = false;
+
+    uint32_t m_defaultFg = 0xE0E0E0;
+    uint32_t m_defaultBg = 0x1A1B26;
 
     int m_scrollTop = 0;
     int m_scrollBottom = 0;

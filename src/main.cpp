@@ -7,11 +7,13 @@
 #include <cstdio>
 #include <vector>
 #include <algorithm>
+#include <thread>
 
 #include "terminal.h"
 #include "renderer.h"
 #include "pty.h"
 #include "ansi.h"
+#include "config.h"
 
 static const wchar_t* CLASS_NAME = L"Nixtty";
 static const int DEFAULT_COLS = 100;
@@ -29,6 +31,7 @@ static bool g_ptyExitRequested = false;
 static wchar_t g_highSurrogate = 0;
 static RECT g_windowRect = {0};
 static bool g_isFullscreen = false;
+static Config g_config;
 
 struct Selection {
     int startX = -1, startY = -1;
@@ -94,23 +97,6 @@ static void writeUtf16String(const wchar_t* str, int count) {
     }
 }
 
-static void updateScrollbar() {
-    if (!g_hwnd || !g_terminal) return;
-    
-    int scrollbackLines = g_terminal->getScrollbackLines();
-    int scrollOffset = g_terminal->getScrollOffset();
-    
-    SCROLLINFO si = {};
-    si.cbSize = sizeof(si);
-    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin = 0;
-    si.nMax = scrollbackLines;
-    si.nPage = g_terminal->getRows();
-    si.nPos = scrollbackLines - scrollOffset; // Invert so 0 is at bottom
-    
-    SetScrollInfo(g_hwnd, SB_VERT, &si, TRUE);
-}
-
 static void updateWindowSize() {
     if (!g_hwnd || !g_renderer) return;
     RECT rc;
@@ -134,8 +120,6 @@ static void updateWindowSize() {
         LeaveCriticalSection(&g_lock);
         g_pty->resize(cols, rows);
     }
-    
-    updateScrollbar();
 }
 
 static void sendCharToPty(wchar_t ch) {
@@ -152,6 +136,70 @@ static void mouseToCell(int mx, int my, int& cx, int& cy) {
     cy = my / g_renderer->getCellHeight();
     cx = std::clamp(cx, 0, g_terminal->getCols() - 1);
     cy = std::clamp(cy, 0, g_terminal->getRows() - 1);
+}
+
+static void toggleFullscreen(HWND hwnd) {
+    log("toggleFullscreen: fullscreen=%d\n", g_isFullscreen);
+    if (!g_isFullscreen) {
+        GetWindowRect(hwnd, &g_windowRect);
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (GetMonitorInfoW(hMonitor, &mi)) {
+            DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
+            SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_THICKFRAME)) | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN);
+            SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            g_isFullscreen = true;
+        }
+    } else {
+        DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
+        SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_POPUP | WS_CLIPCHILDREN)) | WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        SetWindowPos(hwnd, HWND_TOP, g_windowRect.left, g_windowRect.top,
+                     g_windowRect.right - g_windowRect.left,
+                     g_windowRect.bottom - g_windowRect.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        g_isFullscreen = false;
+    }
+    SetFocus(hwnd);
+    InvalidateRect(hwnd, nullptr, TRUE);
+    updateWindowSize();
+}
+
+static int getMouseModifiers() {
+    int mods = 0;
+    if (GetKeyState(VK_SHIFT) & 0x8000)   mods |= 4;
+    if (GetKeyState(VK_MENU) & 0x8000)     mods |= 8;
+    if (GetKeyState(VK_CONTROL) & 0x8000)  mods |= 16;
+    return mods;
+}
+
+static void sendMouseEvent(int col, int row, int button, int event) {
+    if (!g_pty) return;
+    int mods = getMouseModifiers();
+    char buf[32];
+    if (g_terminal->isMouseSGRMode()) {
+        int finalBtn = button | mods;
+        if (event == 1) {
+            finalBtn |= 3;
+        }
+        int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                         finalBtn, col + 1, row + 1,
+                         event == 1 ? 'm' : 'M');
+        g_pty->write(buf, n);
+    } else {
+        int finalBtn = button | mods;
+        if (event == 1) finalBtn = 3 | mods;
+        char seq[6];
+        seq[0] = '\x1b';
+        seq[1] = '[';
+        seq[2] = 'M';
+        seq[3] = (char)(finalBtn + 32);
+        seq[4] = (char)(col + 1 + 32);
+        seq[5] = (char)(row + 1 + 32);
+        g_pty->write(seq, 6);
+    }
 }
 
 static std::wstring getSelectedText() {
@@ -202,8 +250,12 @@ static void copySelectionToClipboard() {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CLOSE:
+        g_ptyExitRequested = true;
+        // Закрываем PTY в отдельном потоке, чтобы не блокировать GUI
         if (g_pty && !g_pty->isClosing()) {
-            g_pty->close();
+            std::thread([p = g_pty.get()]() {
+                p->close();
+            }).detach();
         }
         DestroyWindow(hwnd);
         return 0;
@@ -221,6 +273,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_SIZE:
         updateWindowSize();
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
 
     case WM_PAINT: {
@@ -238,8 +291,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         if (w > 0 && h > 0 && g_renderer && g_renderer->isInitialized() && g_terminal) {
             g_renderer->beginFrame(w, h);
-            
-            updateScrollbar();
             EnterCriticalSection(&g_lock);
             const Cell* buf = g_terminal->getBuffer();
             int cols = g_terminal->getCols();
@@ -272,16 +323,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     for (int x = 0; x < cols; x++) {
                         const Cell& cell = buf[bufLine * cols + x];
                         uint32_t bg = cell.bg;
-                        // Check if this cell is selected
                         if (g_sel.hasSelection() && g_sel.isSelected(x, bufLine)) {
-                            bg = 0x4D6299;
+                            bg = g_config.selection;
                         }
                         g_renderer->drawCell(x, y, cell, bg);
                     }
                 } else {
                     // Empty line
                     for (int x = 0; x < cols; x++) {
-                        g_renderer->drawCell(x, y, Cell{}, 0x1A1B26);
+                        g_renderer->drawCell(x, y, Cell{}, g_config.background);
                     }
                 }
             }
@@ -292,7 +342,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // Draw cursor at its position in the buffer, mapped to screen coordinates
             int cursorScreenY = cur.y + scrollOffset;
             if (cur.visible && ((GetTickCount() / 500) & 1) == 0 && cursorScreenY >= 0 && cursorScreenY < rows) {
-                g_renderer->drawCursor(cur.x, cursorScreenY, g_renderer->getCellWidth(), g_renderer->getCellHeight(), 0xFFFFFF);
+                g_renderer->drawCursor(cur.x, cursorScreenY, g_renderer->getCellWidth(), g_renderer->getCellHeight(), g_config.cursor);
             }
 
             g_renderer->present();
@@ -315,47 +365,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         // Alt+Enter: toggle fullscreen
         if (alt && !ctrl && !shift && wParam == VK_RETURN) {
-            log("Alt+Enter pressed, fullscreen=%d\n", g_isFullscreen);
-            if (!g_isFullscreen) {
-                // Save current window position and size
-                GetWindowRect(hwnd, &g_windowRect);
-                log("Saving window rect: %d,%d - %d,%d\n", g_windowRect.left, g_windowRect.top, g_windowRect.right, g_windowRect.bottom);
-                // Get monitor info
-                MONITORINFO mi = { sizeof(MONITORINFO) };
-                HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                if (GetMonitorInfoW(hMonitor, &mi)) {
-                    log("Monitor: %d,%d - %d,%d\n", mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom);
-                    // Set fullscreen style
-                    DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-                    log("Original style: 0x%08X\n", style);
-                    SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_THICKFRAME)) | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL);
-                    style = GetWindowLongW(hwnd, GWL_STYLE);
-                    log("New style: 0x%08X\n", style);
-                    BOOL result = SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-                                 mi.rcMonitor.right - mi.rcMonitor.left,
-                                 mi.rcMonitor.bottom - mi.rcMonitor.top,
-                                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                    log("SetWindowPos result: %d\n", result);
-                    g_isFullscreen = true;
-                }
-            } else {
-                log("Restoring windowed mode\n");
-                // Restore windowed mode
-                DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-                log("Current style: 0x%08X\n", style);
-                SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_POPUP | WS_CLIPCHILDREN)) | WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_VSCROLL);
-                style = GetWindowLongW(hwnd, GWL_STYLE);
-                log("Restored style: 0x%08X\n", style);
-                BOOL result = SetWindowPos(hwnd, HWND_TOP, g_windowRect.left, g_windowRect.top,
-                             g_windowRect.right - g_windowRect.left,
-                             g_windowRect.bottom - g_windowRect.top,
-                             SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                log("SetWindowPos restore result: %d\n", result);
-                g_isFullscreen = false;
-            }
-            SetFocus(hwnd);
-            InvalidateRect(hwnd, nullptr, TRUE);
-            updateWindowSize();
+            toggleFullscreen(hwnd);
             return 0;
         }
 
@@ -379,7 +389,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (hMem) {
                     wchar_t* p = (wchar_t*)GlobalLock(hMem);
                     if (p) {
-                        writeUtf16String(p, (int)wcslen(p));
+                        if (g_terminal->isBracketedPaste()) {
+                            g_pty->write("\x1b[200~", 6);
+                            writeUtf16String(p, (int)wcslen(p));
+                            g_pty->write("\x1b[201~", 6);
+                        } else {
+                            writeUtf16String(p, (int)wcslen(p));
+                        }
                         GlobalUnlock(hMem);
                     }
                 }
@@ -398,15 +414,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         // Ctrl+Shift++ and Ctrl+Shift+- for font size adjustment
         if (ctrl && shift && (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == 0xBB)) {
-            int newSize = g_renderer->getFontSize() + 1;
-            g_renderer->setFontSize(newSize);
+            g_renderer->setFontSize(g_renderer->getFontSize() + 1);
             updateWindowSize();
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
         if (ctrl && shift && (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == 0xBD)) {
-            int newSize = g_renderer->getFontSize() - 1;
-            g_renderer->setFontSize(newSize);
+            g_renderer->setFontSize(g_renderer->getFontSize() - 1);
             updateWindowSize();
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
@@ -532,43 +546,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         
         // Alt+Enter: toggle fullscreen (handled here because Alt is a system key)
         if (!ctrl && !shift && wParam == VK_RETURN) {
-            log("WM_SYSKEYDOWN Alt+Enter pressed, fullscreen=%d\n", g_isFullscreen);
-            if (!g_isFullscreen) {
-                GetWindowRect(hwnd, &g_windowRect);
-                log("Saving window rect: %d,%d - %d,%d\n", g_windowRect.left, g_windowRect.top, g_windowRect.right, g_windowRect.bottom);
-                MONITORINFO mi = { sizeof(MONITORINFO) };
-                HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                if (GetMonitorInfoW(hMonitor, &mi)) {
-                    log("Monitor: %d,%d - %d,%d\n", mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom);
-                    DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-                    log("Original style: 0x%08X\n", style);
-                    SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_THICKFRAME)) | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL);
-                    style = GetWindowLongW(hwnd, GWL_STYLE);
-                    log("New style: 0x%08X\n", style);
-                    BOOL result = SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-                                 mi.rcMonitor.right - mi.rcMonitor.left,
-                                 mi.rcMonitor.bottom - mi.rcMonitor.top,
-                                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                    log("SetWindowPos result: %d\n", result);
-                    g_isFullscreen = true;
-                }
-            } else {
-                log("Restoring windowed mode\n");
-                DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-                log("Current style: 0x%08X\n", style);
-                SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_POPUP | WS_CLIPCHILDREN)) | WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_VSCROLL);
-                style = GetWindowLongW(hwnd, GWL_STYLE);
-                log("Restored style: 0x%08X\n", style);
-                BOOL result = SetWindowPos(hwnd, HWND_TOP, g_windowRect.left, g_windowRect.top,
-                             g_windowRect.right - g_windowRect.left,
-                             g_windowRect.bottom - g_windowRect.top,
-                             SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                log("SetWindowPos restore result: %d\n", result);
-                g_isFullscreen = false;
-            }
-            SetFocus(hwnd);
-            InvalidateRect(hwnd, nullptr, TRUE);
-            updateWindowSize();
+            toggleFullscreen(hwnd);
             return 0;
         }
 
@@ -597,23 +575,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CHAR: {
         if (!g_pty) return 0;
         wchar_t ch = (wchar_t)wParam;
-        // Check for Ctrl+Shift++ and Ctrl+Shift+- in WM_CHAR as well
-        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        if (ctrl && shift && (ch == L'+' || ch == L'=')) {
-            int newSize = g_renderer->getFontSize() + 1;
-            g_renderer->setFontSize(newSize);
-            updateWindowSize();
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-        }
-        if (ctrl && shift && (ch == L'-' || ch == L'_')) {
-            int newSize = g_renderer->getFontSize() - 1;
-            g_renderer->setFontSize(newSize);
-            updateWindowSize();
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-        }
         if (ch >= 32) {
             writeUtf8(ch);
         }
@@ -658,6 +619,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONDOWN: {
         if (!g_renderer || !g_terminal) return 0;
         SetCapture(hwnd);
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (g_terminal->isMouseTracking() && !shift) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 0, 0);
+            return 0;
+        }
         g_sel.clear();
         mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), g_sel.startX, g_sel.startY);
         g_sel.endX = g_sel.startX;
@@ -668,7 +636,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_MOUSEMOVE: {
-        if (!g_sel.selecting || !g_renderer || !g_terminal) return 0;
+        if (!g_renderer || !g_terminal) return 0;
+        if (g_terminal->isMouseTracking() && !g_sel.selecting) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 32, 0);
+            return 0;
+        }
+        if (!g_sel.selecting) return 0;
         int cx, cy;
         mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
         if (cx != g_sel.endX || cy != g_sel.endY) {
@@ -680,6 +655,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_LBUTTONUP: {
+        if (g_terminal->isMouseTracking() && !g_sel.selecting) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 0, 1);
+            ReleaseCapture();
+            return 0;
+        }
         if (!g_sel.selecting) return 0;
         g_sel.selecting = false;
         ReleaseCapture();
@@ -689,78 +671,71 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
 
-    case WM_MOUSEWHEEL: {
-        if (!g_terminal) return 0;
-        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
-        int count = abs(delta / WHEEL_DELTA);
-        if (count == 0) count = 1;
-        
-        if (delta > 0) {
-            // Scroll up - scroll back in terminal
-            g_terminal->scrollBack(count);
-        } else {
-            // Scroll down - scroll forward in terminal
-            g_terminal->scrollForward(count);
+    case WM_MBUTTONDOWN: {
+        if (!g_terminal || !g_renderer) return 0;
+        if (g_terminal->isMouseTracking()) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 1, 0);
+            return 0;
         }
-        updateScrollbar();
-        InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
 
-    case WM_VSCROLL: {
-        if (!g_terminal) return 0;
-        int scrollType = LOWORD(wParam);
-        int pos = HIWORD(wParam);
-        
-        switch (scrollType) {
-            case SB_LINEUP:
-                g_terminal->scrollBack(1);
-                break;
-            case SB_LINEDOWN:
-                g_terminal->scrollForward(1);
-                break;
-            case SB_PAGEUP:
-                g_terminal->scrollBack(g_terminal->getRows() / 2);
-                break;
-            case SB_PAGEDOWN:
-                g_terminal->scrollForward(g_terminal->getRows() / 2);
-                break;
-            case SB_THUMBTRACK:
-            case SB_THUMBPOSITION: {
-                // Calculate scroll position based on scrollbar thumb
-                int totalScrollback = g_terminal->getScrollbackLines();
-                int maxScroll = totalScrollback;
-                if (maxScroll > 0) {
-                    // pos is in range [0, maxScroll]
-                    // We want to scroll so that the thumb position shows the scrollback
-                    int newOffset = maxScroll - pos;
-                    // Clamp to valid range
-                    if (newOffset < 0) newOffset = 0;
-                    if (newOffset > maxScroll) newOffset = maxScroll;
-                    
-                    // Set scroll offset directly
-                    // We need to access m_scrollOffset, but it's private
-                    // So we'll use scrollBack/scrollForward to adjust
-                    int currentOffset = g_terminal->getScrollOffset();
-                    if (newOffset > currentOffset) {
-                        g_terminal->scrollBack(newOffset - currentOffset);
-                    } else if (newOffset < currentOffset) {
-                        g_terminal->scrollForward(currentOffset - newOffset);
-                    }
-                }
-                break;
-            }
-            case SB_TOP:
-                // Scroll to top of scrollback (maximum scroll offset)
-                if (g_terminal->getScrollbackLines() > 0) {
-                    g_terminal->scrollBack(g_terminal->getScrollbackLines());
-                }
-                break;
-            case SB_BOTTOM:
-                g_terminal->scrollToBottom();
-                break;
+    case WM_RBUTTONDOWN: {
+        if (!g_terminal || !g_renderer) return 0;
+        if (g_terminal->isMouseTracking()) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 2, 0);
+            return 0;
         }
-        updateScrollbar();
+        return 0;
+    }
+
+    case WM_MBUTTONUP: {
+        if (g_terminal && g_terminal->isMouseTracking()) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 1, 1);
+            return 0;
+        }
+        return 0;
+    }
+
+    case WM_RBUTTONUP: {
+        if (g_terminal && g_terminal->isMouseTracking()) {
+            int cx, cy;
+            mouseToCell(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), cx, cy);
+            sendMouseEvent(cx, cy, 2, 1);
+            return 0;
+        }
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL: {
+        if (!g_terminal || !g_renderer) return 0;
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int count = abs(delta / WHEEL_DELTA);
+        if (count == 0) count = 1;
+
+        if (g_terminal->isMouseTracking()) {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &pt);
+            int cx, cy;
+            mouseToCell(pt.x, pt.y, cx, cy);
+            int button = (delta > 0) ? 64 : 65;
+            for (int i = 0; i < count; i++) {
+                sendMouseEvent(cx, cy, button, 0);
+            }
+            return 0;
+        }
+        
+        if (delta > 0) {
+            g_terminal->scrollBack(count);
+        } else {
+            g_terminal->scrollForward(count);
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
@@ -781,6 +756,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == 1) InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
+
+    case WM_PASTE: {
+        if (!g_pty) return 0;
+        if (OpenClipboard(hwnd)) {
+            HGLOBAL hMem = GetClipboardData(CF_UNICODETEXT);
+            if (hMem) {
+                wchar_t* p = (wchar_t*)GlobalLock(hMem);
+                if (p) {
+                    if (g_terminal && g_terminal->isBracketedPaste()) {
+                        g_pty->write("\x1b[200~", 6);
+                        writeUtf16String(p, (int)wcslen(p));
+                        g_pty->write("\x1b[201~", 6);
+                    } else {
+                        writeUtf16String(p, (int)wcslen(p));
+                    }
+                    GlobalUnlock(hMem);
+                }
+            }
+            CloseClipboard();
+        }
+        return 0;
+    }
 
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -820,7 +817,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     wc.lpszClassName = CLASS_NAME;
     RegisterClassExW(&wc);
 
-    g_hwnd = CreateWindowExW(0, CLASS_NAME, L"Nixtty", WS_OVERLAPPEDWINDOW | WS_VSCROLL,
+    g_hwnd = CreateWindowExW(0, CLASS_NAME, L"Nixtty", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         nullptr, nullptr, hInstance, nullptr);
     if (!g_hwnd) { log("CreateWindow failed\n"); return 1; }
@@ -840,6 +837,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         return 1;
     }
 
+    {
+        wchar_t configPath[MAX_PATH];
+        GetModuleFileNameW(nullptr, configPath, MAX_PATH);
+        wchar_t* sl2 = wcsrchr(configPath, L'\\');
+        if (sl2) { wcscpy(sl2 + 1, L"config.toml"); }
+        if (g_config.loadFromFile("config.toml")) {
+            log("Config loaded\n");
+        } else {
+            log("Config not found, using defaults\n");
+        }
+        g_renderer->setFontSize(g_config.fontSize);
+        g_terminal->setDefaultColors(g_config.foreground, g_config.background);
+        for (int i = 0; i < 16; i++) {
+            g_ansi->setAnsiColor(i, g_config.ansiColors[i]);
+        }
+    }
+
     int cw = g_renderer->getCellWidth();
     int ch = g_renderer->getCellHeight();
     int winW = DEFAULT_COLS * cw + 16;
@@ -855,9 +869,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         InvalidateRect(g_hwnd, nullptr, FALSE);
     };
     g_pty->onExit = []() { 
-        // Повышаем запрос на закрытие
-        g_ptyExitRequested = true;
-        if (g_hwnd) {
+        // Уведомляем главное окно о завершении PTY
+        // Проверяем, что окно еще существует и не уничтожается
+        if (g_hwnd && !g_ptyExitRequested) {
+            g_ptyExitRequested = true;
             PostMessage(g_hwnd, WM_USER + 1, 0, 0);
         }
     };
@@ -900,7 +915,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
 done:
     log("Shutting down\n");
-    g_pty->close();
     g_renderer->shutdown();
     DeleteCriticalSection(&g_lock);
     log("=== END (paints=%d) ===\n", g_paintCount);
