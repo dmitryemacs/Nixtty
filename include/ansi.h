@@ -12,6 +12,8 @@ public:
     void parse(const char* data, size_t len);
     void parse(const wchar_t* data, size_t len);
 
+    void setAnsiColor(int index, uint32_t color);
+
     std::function<void(const char*, size_t)> onWrite;
 
 private:

@@ -364,12 +364,19 @@ void Terminal::setInverse(bool inv) {
 }
 
 void Terminal::resetAttributes() {
-    m_currentFg = 0xE0E0E0;
-    m_currentBg = 0x1A1B26;
+    m_currentFg = m_defaultFg;
+    m_currentBg = m_defaultBg;
     m_bold = false;
     m_dim = false;
     m_italic = false;
     m_inverse = false;
+}
+
+void Terminal::setDefaultColors(uint32_t defaultFg, uint32_t defaultBg) {
+    m_defaultFg = defaultFg;
+    m_defaultBg = defaultBg;
+    m_currentFg = defaultFg;
+    m_currentBg = defaultBg;
 }
 
 void Terminal::saveCursor() {
