@@ -97,23 +97,6 @@ static void writeUtf16String(const wchar_t* str, int count) {
     }
 }
 
-static void updateScrollbar() {
-    if (!g_hwnd || !g_terminal) return;
-    
-    int scrollbackLines = g_terminal->getScrollbackLines();
-    int scrollOffset = g_terminal->getScrollOffset();
-    
-    SCROLLINFO si = {};
-    si.cbSize = sizeof(si);
-    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    si.nMin = 0;
-    si.nMax = scrollbackLines;
-    si.nPage = g_terminal->getRows();
-    si.nPos = scrollbackLines - scrollOffset; // Invert so 0 is at bottom
-    
-    SetScrollInfo(g_hwnd, SB_VERT, &si, TRUE);
-}
-
 static void updateWindowSize() {
     if (!g_hwnd || !g_renderer) return;
     RECT rc;
@@ -137,8 +120,6 @@ static void updateWindowSize() {
         LeaveCriticalSection(&g_lock);
         g_pty->resize(cols, rows);
     }
-    
-    updateScrollbar();
 }
 
 static void sendCharToPty(wchar_t ch) {
@@ -165,7 +146,7 @@ static void toggleFullscreen(HWND hwnd) {
         HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         if (GetMonitorInfoW(hMonitor, &mi)) {
             DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-            SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_THICKFRAME)) | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL);
+            SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_THICKFRAME)) | WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN);
             SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
                          mi.rcMonitor.right - mi.rcMonitor.left,
                          mi.rcMonitor.bottom - mi.rcMonitor.top,
@@ -174,7 +155,7 @@ static void toggleFullscreen(HWND hwnd) {
         }
     } else {
         DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-        SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_POPUP | WS_CLIPCHILDREN)) | WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_VSCROLL);
+        SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_POPUP | WS_CLIPCHILDREN)) | WS_OVERLAPPEDWINDOW | WS_VISIBLE);
         SetWindowPos(hwnd, HWND_TOP, g_windowRect.left, g_windowRect.top,
                      g_windowRect.right - g_windowRect.left,
                      g_windowRect.bottom - g_windowRect.top,
@@ -292,6 +273,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_SIZE:
         updateWindowSize();
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
 
     case WM_PAINT: {
@@ -309,8 +291,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         if (w > 0 && h > 0 && g_renderer && g_renderer->isInitialized() && g_terminal) {
             g_renderer->beginFrame(w, h);
-            
-            updateScrollbar();
             EnterCriticalSection(&g_lock);
             const Cell* buf = g_terminal->getBuffer();
             int cols = g_terminal->getCols();
@@ -434,15 +414,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         // Ctrl+Shift++ and Ctrl+Shift+- for font size adjustment
         if (ctrl && shift && (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == 0xBB)) {
-            int newSize = g_renderer->getFontSize() + 1;
-            g_renderer->setFontSize(newSize);
+            g_renderer->setFontSize(g_renderer->getFontSize() + 1);
             updateWindowSize();
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
         if (ctrl && shift && (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == 0xBD)) {
-            int newSize = g_renderer->getFontSize() - 1;
-            g_renderer->setFontSize(newSize);
+            g_renderer->setFontSize(g_renderer->getFontSize() - 1);
             updateWindowSize();
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
@@ -597,23 +575,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CHAR: {
         if (!g_pty) return 0;
         wchar_t ch = (wchar_t)wParam;
-        // Check for Ctrl+Shift++ and Ctrl+Shift+- in WM_CHAR as well
-        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        if (ctrl && shift && (ch == L'+' || ch == L'=')) {
-            int newSize = g_renderer->getFontSize() + 1;
-            g_renderer->setFontSize(newSize);
-            updateWindowSize();
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-        }
-        if (ctrl && shift && (ch == L'-' || ch == L'_')) {
-            int newSize = g_renderer->getFontSize() - 1;
-            g_renderer->setFontSize(newSize);
-            updateWindowSize();
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-        }
         if (ch >= 32) {
             writeUtf8(ch);
         }
@@ -775,65 +736,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         } else {
             g_terminal->scrollForward(count);
         }
-        updateScrollbar();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-    }
-
-    case WM_VSCROLL: {
-        if (!g_terminal) return 0;
-        int scrollType = LOWORD(wParam);
-        int pos = HIWORD(wParam);
-        
-        switch (scrollType) {
-            case SB_LINEUP:
-                g_terminal->scrollBack(1);
-                break;
-            case SB_LINEDOWN:
-                g_terminal->scrollForward(1);
-                break;
-            case SB_PAGEUP:
-                g_terminal->scrollBack(g_terminal->getRows() / 2);
-                break;
-            case SB_PAGEDOWN:
-                g_terminal->scrollForward(g_terminal->getRows() / 2);
-                break;
-            case SB_THUMBTRACK:
-            case SB_THUMBPOSITION: {
-                // Calculate scroll position based on scrollbar thumb
-                int totalScrollback = g_terminal->getScrollbackLines();
-                int maxScroll = totalScrollback;
-                if (maxScroll > 0) {
-                    // pos is in range [0, maxScroll]
-                    // We want to scroll so that the thumb position shows the scrollback
-                    int newOffset = maxScroll - pos;
-                    // Clamp to valid range
-                    if (newOffset < 0) newOffset = 0;
-                    if (newOffset > maxScroll) newOffset = maxScroll;
-                    
-                    // Set scroll offset directly
-                    // We need to access m_scrollOffset, but it's private
-                    // So we'll use scrollBack/scrollForward to adjust
-                    int currentOffset = g_terminal->getScrollOffset();
-                    if (newOffset > currentOffset) {
-                        g_terminal->scrollBack(newOffset - currentOffset);
-                    } else if (newOffset < currentOffset) {
-                        g_terminal->scrollForward(currentOffset - newOffset);
-                    }
-                }
-                break;
-            }
-            case SB_TOP:
-                // Scroll to top of scrollback (maximum scroll offset)
-                if (g_terminal->getScrollbackLines() > 0) {
-                    g_terminal->scrollBack(g_terminal->getScrollbackLines());
-                }
-                break;
-            case SB_BOTTOM:
-                g_terminal->scrollToBottom();
-                break;
-        }
-        updateScrollbar();
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
@@ -915,7 +817,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     wc.lpszClassName = CLASS_NAME;
     RegisterClassExW(&wc);
 
-    g_hwnd = CreateWindowExW(0, CLASS_NAME, L"Nixtty", WS_OVERLAPPEDWINDOW | WS_VSCROLL,
+    g_hwnd = CreateWindowExW(0, CLASS_NAME, L"Nixtty", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         nullptr, nullptr, hInstance, nullptr);
     if (!g_hwnd) { log("CreateWindow failed\n"); return 1; }
