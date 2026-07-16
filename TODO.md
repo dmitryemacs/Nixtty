@@ -1,283 +1,189 @@
-# TODO: Улучшение поддержки лигатур и Unicode
+# TODO: Alacritty-style glyph storage refactor
 
-## Анализ текущего состояния
+## Goal
+Replace dual-atlas architecture with Alacritty-style unified lazy glyph cache
+and dynamic row-based texture atlases.
 
-| Возможность | Nixtty (текущее) | Kitty |
-|-------------|-----------------|-------|
-| **Хранение ячеек** | Один `wchar_t` на ячейку | Множественные codepoint'ы, биты ширины |
-| **Лигатуры** | Нет | HarfBuzz + группировка глифов |
-| **Широкие символы (CJK)** | Сломано (1 ячейка) | `wcwidth()` + multicell система |
-| **Графемные кластеры** | Нет | Сегментация состояний |
-| **Комбинирующие знаки** | Нет | TextCache до 24 codepoint'ов/ячейка |
-| **Эмодзи** | Сломано | VS15/VS16, определение presentation |
-| **Fallback шрифты** | CTLine fallback (до атласа) | Цепочка fallback на каждый глиф |
+## Current Problems
+1. Two separate maps (`m_glyphs` + `m_fallbackGlyphs`) — redundant
+2. Fixed 128-col grid atlas — wastes space, no compaction
+3. `flushGlyphBatch()` binds only `m_fontTexture` — **BUG**: fallback glyphs
+   reference `m_fallbackTexture` but wrong texture is bound
+4. No multi-texture batch handling
+5. `const_cast` hack in `findGlyph` lambda
 
-## Архитектура kitty
+## Target Architecture
 
-### Ключевые файлы
+### New Types (renderer.h)
 
-| Файл | Назначение |
-|------|-----------|
-| `kitty/fonts.c` | Харфбез, группировка лигатур, кэш спрайтов |
-| `kitty/freetype.c` | Растеризация глифов, HarfBuzz шрифт |
-| `kitty/char-props.c` | Таблицы свойств Unicode символов |
-| `kitty/wcswidth.c` | Сегментация графем, определение ширины |
-| `kitty/text-cache.c` | Кэш multi-codepoint ячеек |
-| `kitty/glyph-cache.c` | Хэш-таблица кэша спрайтов |
+```cpp
+struct GlyphKey {
+    wchar_t character;
+    int fontSize;
+    bool operator==(const GlyphKey& o) const {
+        return character == o.character && fontSize == o.fontSize;
+    }
+};
+// + std::hash specialization
 
-### Поток данных
+struct Glyph {
+    GLuint tex_id;
+    float u0, v0, u1, v1;
+    int width, height;
+};
 
-```
-Текст (codepoint'ы)
-    ↓
-[screen.c: draw_text_loop]
-  - Сегментация графем (char-props.c)
-  - wcwidth определяет ширину (1, 2, 0)
-  - Комбинирующие знаки → TextCache
-  - Широкие символы → multicell (width=2)
-    ↓
-[fonts.c: render_line]
-  - Группировка по шрифту + стилю + масштабу
-  - Для каждого run одинакового шрифта:
-    ↓
-  [fonts.c: shape_run → hb_shape]
-    - HarfBuzz формирует текст с OpenType фичами
-    - Возвращает: glyph IDs + позиции + cluster info
-    ↓
-  [fonts.c: group_normal / group_iosevka]
-    - Маппит глифы обратно на ячейки по cluster numbers
-    - Определяет глифы лигатур (special) и спейсеры (empty)
-    ↓
-  [fonts.c: render_group]
-    - Рендерит все глифы группы в один широкий bitmap
-    - Нарезает bitmap на per-cell спрайты
-    - Кэширует спрайты в хэш-таблице
-    - Загружает новые спрайты в GPU
+struct Atlas {
+    GLuint texture = 0;
+    static const int SIZE = 1024;
+    int row_extent = 0;
+    int row_baseline = 0;
+    int row_tallest = 0;
+};
 ```
 
----
+### Member Replacements
 
-## План реализации
+| Remove | Add |
+|--------|-----|
+| `m_fontTexture` | `std::vector<Atlas> m_atlases` |
+| `m_fallbackTexture` | `int m_currentAtlas = 0` |
+| `m_glyphs` | `std::unordered_map<GlyphKey, Glyph> m_glyphCache` |
+| `m_fallbackGlyphs` | — |
+| `m_atlasTexW/H` | — |
+| `m_fallbackTexW/H` | — |
+| `m_fallbackAtlasRow` | — |
+| `m_hasFallback` | — |
+| `m_fallbackOldBmp/OldFont` | — |
+| `ATLAS_COLS` | — |
 
-### Фаза 1: Юникод-основа (Неделя 1)
+Keep: `m_fallbackMemDC`, `m_fallbackBitmap`, `m_fallbackBits` (GDI rasterizer)
 
-**Цель**: правильная ширина символов и сегментация графем
+Add to GlyphQuad:
+```cpp
+struct GlyphQuad {
+    float x, y, w, h;
+    float u0, v0, u1, v1;
+    uint32_t color;
+    GLuint tex_id;  // NEW
+};
+```
 
-#### Задачи
+## Implementation Steps
 
-- [ ] **1.1 Добавить wcwidth() реализацию**
-  - Имплементировать таблицы символьных свойств
-  - Определять ширину: 0 (комбинирующий), 1 (обычный), 2 (CJK/широкий)
-  - Файл: `include/unicode.h`, `src/unicode.cpp`
+### Step 1: Add new types to renderer.h
+- GlyphKey (with hash specialization)
+- Glyph (with tex_id)
+- Atlas (1024x1024, row-based)
+- Update GlyphQuad (add tex_id)
+- Replace member variables
+- Add method declarations: `getGlyph`, `loadCommonGlyphs`, `clearGlyphCache`, `measureCellSize`
 
-- [ ] **1.2 Расширить структуру Cell**
+### Step 2: Implement Atlas::insertGlyph() in renderer.cpp
+- Row-based bin packing algorithm:
+  - `room_in_row(glyph_w, glyph_h)`: check horizontal + vertical fit
+  - `advance_row()`: row_baseline += row_tallest, reset row_extent
+  - If atlas full → create new Atlas (new GL texture), push to m_atlases
+- Upload via `glTexSubImage2D` at (row_extent, row_baseline)
+- Return `Glyph` with UV coords: `uv_left = x / 1024`, `uv_bot = y / 1024`, etc.
+- Static method or standalone taking `m_atlases`, `m_currentAtlas` by ref
+
+### Step 3: Implement getGlyph(wchar_t ch) in renderer.cpp
+- Build `GlyphKey{ch, m_fontSize}`
+- Cache lookup → hit → return `&glyph`
+- Cache miss:
+  1. GDI rasterize on `m_fallbackMemDC`: `FillRect` cell → `TextOutW` → `GetTextExtentPoint32W`
+  2. Read pixels from `m_fallbackBits`, convert BGR→white-on-alpha
+  3. `Atlas::insertGlyph()` → get back `Glyph` with tex_id + UV
+  4. `m_glyphCache.insert(key, glyph)`
+  5. Return `&glyph`
+- Returns `nullptr` if glyph not renderable
+
+### Step 4: Implement loadCommonGlyphs() in renderer.cpp
+- Pre-rasterize ASCII 32-126 (95 glyphs)
+- Loop: `for (wchar_t c = 0x20; c < 0x7F; c++) getGlyph(c);`
+- Called from `init()` and `setFontSize()`
+
+### Step 5: Implement clearGlyphCache() in renderer.cpp
+- `m_glyphCache.clear()`
+- For each atlas in `m_atlases`: reset row_extent/row_baseline/row_tallest to 0
+  (reuse GL textures, don't delete)
+- Reset `m_currentAtlas = 0`
+
+### Step 6: Implement measureCellSize() in renderer.cpp
+- Create font: `CreateFontW(-m_fontSize, ...)`
+- Measure: `GetTextMetricsW` + `GetTextExtentPoint32W("X")`
+- Set `m_cellWidth`, `m_cellHeight`
+- Delete font
+- Fast (~microseconds), no caching needed
+
+### Step 7: Update drawCell() in renderer.cpp
+- Replace `findGlyph` lambda with single call:
   ```cpp
-  struct Cell {
-      wchar_t ch = L' ';
-      uint32_t fg = 0xE0E0E0;
-      uint32_t bg = 0x1A1B26;
-      bool bold = false;
-      bool italic = false;
-      bool inverse = false;
-      uint8_t width = 1;      // 1 или 2
-  };
+  GlyphKey key = {ch, m_fontSize};
+  auto it = m_glyphCache.find(key);
+  const Glyph* gi = (it != m_glyphCache.end())
+      ? &it->second
+      : const_cast<Renderer*>(this)->getGlyph(ch);
   ```
-  - Файл: `include/terminal.h`
+- Use `gi->tex_id` when building GlyphQuad
+- Same logic for combined characters
 
-- [ ] **1.3 Реализовать сегментацию графемных кластеров (UAX#29)**
-  - Сегментное состояние для определения границ графем
-  - Объединение base + комбинирующих знаков в одну ячейку
-  - Файл: `src/unicode.cpp`
-
-- [ ] **1.4 Исправить putChar/newline для широких символов**
-  - Сдвигать курсор на `width` для широких символов
-  - Обрабатывать широкий символ в конце строки (wrap или truncate)
-  - Файл: `src/terminal.cpp`
-
----
-
-### Фаза 2: Интеграция HarfBuzz (Неделя 2)
-
-**Цель**: правильное формирование текста для лигатур
-
-#### Задачи
-
-- [ ] **2.1 Добавить зависимость HarfBuzz через FetchContent**
-  - Добавить в CMakeLists.txt
-  - Файл: `CMakeLists.txt`
-
-- [ ] **2.2 Инициализировать HB шрифт из CTFont**
-  - Создать HarfBuzz шрифт из Core Text
-  - Настроить flags для рендеринга
-  - Файл: `src/renderer.cpp`
-
-- [ ] **2.3 Реализовать формирование текста с OpenType фичами**
-  - Включить: `liga`, `calt`, `dlig`
-  - Настроить отключение лигатур по необходимости
-  - Файл: `src/renderer.cpp`
-
-- [ ] **2.4 Маппинг сформированных глифов обратно на ячейки**
-  - Использовать cluster numbers от HarfBuzz
-  - Определять глифы лигатур (glyph ID != прямой маппинг)
-  - Файл: `src/renderer.cpp`
-
-- [ ] **2.5 Реализовать группировку лигатур и спейсеров**
-  - Три стратегии спейсеров:
-    - Fira Code: EMPTY, EMPTY, WIDE_GLYPH
-    - Cascadia Code: WIDE_GLYPH, EMPTY, EMPTY
-    - Iosevka: .join-l, .join-m, .join-r
-  - Бесконечные лигатуры (--->, ===> и т.д.)
-  - Файл: `src/renderer.cpp`
-
----
-
-### Фаза 3: Многоклеточный рендеринг (Неделя 3)
-
-**Цель**: рендерить лигатуры и широкие символы как одно изображение
-
-#### Задачи
-
-- [ ] **3.1 Расширить GlyphInfo**
-  - Добавить поле `advance`
-  - Отслеживать группы лигатур
-  - Файл: `include/renderer.h`
-
-- [ ] **3.2 Реализовать широкий рендеринг глифов**
-  - Рендерить лигатуру как `num_cells * cell_width` bitmap
-  - Кэшировать результат
-  - Файл: `src/renderer.cpp`
-
-- [ ] **3.3 Нарезать wide bitmap на per-cell спрайты**
-  - Извлекать cell_width колонок из широкого bitmap
-  - Хранить UV координаты для каждой ячейки
-  - Файл: `src/renderer.cpp`
-
-- [ ] **3.4 Обновить API drawCell**
+### Step 8: Fix flushGlyphBatch() in renderer.cpp
+- Track current bound texture
+- Rebind when `tex_id` changes:
   ```cpp
-  struct CellRenderInfo {
-      wchar_t ch;
-      uint32_t fg, bg;
-      bool bold, italic;
-      int width;            // количество ячеек
-      float u0, v0, u1, v1; // UV для этой ячейки
-      float offsetX;        // горизонтальное смещение внутри лигатуры
-  };
-  void drawCell(int x, int y, const CellRenderInfo& info);
+  GLuint lastTex = 0;
+  for (const auto& q : m_glyphBatch) {
+      if (q.tex_id != lastTex) {
+          if (lastTex != 0) glEnd();
+          glBindTexture(GL_TEXTURE_2D, q.tex_id);
+          if (lastTex == 0) glEnable(GL_TEXTURE_2D);
+          glBegin(GL_QUADS);
+          lastTex = q.tex_id;
+      }
+      // draw quad
+  }
+  if (lastTex != 0) glEnd();
   ```
-  - Файлы: `include/renderer.h`, `src/renderer.cpp`
 
----
-
-### Фаза 4: Продвинутый Юникод (Неделя 4)
-
-**Цель**: эмодзи, комбинирующие знаки, fallback шрифты
-
-#### Задачи
-
-- [ ] **4.1 Добавить таблицу свойств эмодзи и обработку VS15/VS16**
-  - Таблица для определения emoji символов
-  - Обработка VS15 (текст) и VS16 (эмодзи) селекторов
-  - Файл: `src/unicode.cpp`
-
-- [ ] **4.2 Добавить поддержку комбинирующих знаков с TextCache**
-  - Хранить multi-codepoint последовательности
-  - Стек комбинирующих знаков на base символе
-  - Рендерить как один глиф
-  - Файлы: `include/terminal.h`, `src/terminal.cpp`
-
-- [ ] **4.3 Добавить цепочку fallback шрифтов для каждого глифа**
-  - Поиск fallback при отсутствии глифа в основном шрифте
-  - Кэширование fallback шрифтов
-  - Файл: `src/renderer.cpp`
-
----
-
-## Ключевые технические решения
-
-### 1. Где формировать текст
-
-**Рекомендация**: Terminal сторона (как kitty)
-
-Причины:
-- Формирование влияет на раскладку ячеек
-- Лигатуры занимают N ячеек, нужно обновить курсор
-- Широкие символы требуют advance на 2 позиции
-
-### 2. Кэш спрайтов
-
-**Рекомендация**: По требованию с кэшем (как glyph-cache.c)
-
-Причины:
-- Не все лигатуры используются одновременно
-- Экономит память
-- Кэш ключ: glyph IDs + ligature_index + scale + font
-
-### 3. HarfBuzz vs Core Text shaping
-
-**Рекомендация**: HarfBuzz
-
-Причины:
-- Больше контроля над OpenType фичами
-- Лучше поддержка лигатур
-- Консистентное поведение на разных платформах
-
----
-
-## MVP (Minimum Viable Product)
-
-**Фаза 1 + Фаза 2** = работающие лигатуры + правильная ширина CJK
-
-Этого достаточно для:
-- Рендеринга лигатур в терминале
-- Правильного отображения CJK символов
-- Базовой поддержки Unicode
-
----
-
-## Файлы для модификации
-
-### Новые файлы
-- `include/unicode.h` - Таблицы свойств Unicode, wcwidth
-- `src/unicode.cpp` - Реализация wcwidth и сегментации
-
-### Модифицируемые файлы
-- `include/terminal.h` - Структура Cell, новые методы
-- `src/terminal.cpp` - putChar, resize, wide char handling
-- `include/renderer.h` - GlyphInfo, CellRenderInfo
-- `src/renderer.cpp` - HarfBuzz, группировка, широкий рендеринг
-- `CMakeLists.txt` - Зависимость HarfBuzz
-- `src/main.cpp` - Обновленные вызовы drawCell
-
----
-
-## Тестовые сценарии
-
-### Лигатуры
+### Step 9: Rewrite init() in renderer.cpp
 ```
-!= => --> ==> ===> <<< >>> 
-|| && ++ -- ** // \\
+1. GL setup (pixel format, context, blend)  — unchanged
+2. measureCellSize()
+3. Create first Atlas (glGenTextures + glTexImage2D 1024x1024)
+4. Create GDI scratchpad (m_fallbackMemDC + m_fallbackBitmap)
+5. loadCommonGlyphs()
+6. m_initialized = true
 ```
 
-### Широкие символы (CJK)
+### Step 10: Rewrite setFontSize() in renderer.cpp
 ```
-日本語テスト
-中文测试
-한국어 테스트
-```
-
-### Эмодзи
-```
-😀 🎉 🚀 💻 📝
+1. Clear old GDI scratchpad (m_fallbackBitmap/m_fallbackMemDC)
+2. m_fontSize = size
+3. measureCellSize()
+4. clearGlyphCache()
+5. Recreate GDI scratchpad for new cell dimensions
+6. loadCommonGlyphs()
 ```
 
-### Комбинирующие знаки
-```
-é à ü ñ ç
-e + ´ = é
-```
+### Step 11: Clean up renderer.h and renderer.cpp
+- Remove: `createFontAtlas`, `createFallbackAtlas`, `addGlyphToAtlas`, `renderCombinedGlyphs`
+- Remove all dead member variables
+- Clean up `shutdown()`: delete all atlas GL textures + GDI objects
 
-### Смешанный контент
-```
-const x = "日本語"; // ligature + CJK
-fn main() { println!("🚀"); }
-```
+### Step 12: Update main.cpp
+- `WM_SIZE`: already has `InvalidateRect` — no change needed
+- Font size keybindings: already call `setFontSize()` directly — no change needed
+- Remove debounce timer remnants (if any still exist)
+
+## Verification
+- Build with `cmake --build build`
+- Test: change font size with Ctrl+Shift+/- — should be instant
+- Test: resize window — text should remain visible
+- Test: display CJK/emoji characters — should render via lazy loading
+- Test: hold Ctrl+Shift+/- — rapid size changes without freeze
+
+## Risk Notes
+- The `const_cast` in drawCell should be cleaned up (getGlyph should not be const, or make glyphCache mutable)
+- Atlas full scenario: silently drops glyphs currently — consider logging warning
+- GDI scratchpad (m_fallbackBits) needs to be recreated on font size change since cell dimensions change
