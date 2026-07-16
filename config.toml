@@ -2,37 +2,48 @@
 # Place this file in ~/.config/nixtty/config.toml
 
 [font]
-family = "Hack Nerd Font Mono"
+family = "Hack Nerd Font"
 size = 16
 
 [colors]
 # Background color (hex RGB)
-background = "#1A1B26"
+background = "#1E1E1E"
 # Foreground color (hex RGB)
-foreground = "#C0CAF5"
+foreground = "#FFFFFF"
 # Cursor color
 cursor = "#FFFFFF"
 # Selection background color
-selection = "#4D6299"
+selection = "#404040"
 
 # ANSI colors (0-15)
-# color0 = "#1A1B26"   # Black
-# color1 = "#F7768E"   # Red
-# color2 = "#9ECE6A"   # Green
-# color3 = "#E0AF68"   # Yellow
-# color4 = "#7AA2F7"   # Blue
-# color5 = "#BB9AF7"   # Magenta
-# color6 = "#7DCFFF"   # Cyan
-# color7 = "#A9B1D6"   # White
-# color8 = "#414868"   # Bright Black
-# color9 = "#F7768E"   # Bright Red
-# color10 = "#9ECE6A"  # Bright Green
-# color11 = "#E0AF68"  # Bright Yellow
-# color12 = "#7AA2F7"  # Bright Blue
-# color13 = "#BB9AF7"  # Bright Magenta
-# color14 = "#7DCFFF"  # Bright Cyan
-# color15 = "#C0CAF5"  # Bright White
+color0 = "#000000"    # Black
+color1 = "#CC0000"    # Red
+color2 = "#4E9A06"    # Green
+color3 = "#C4A000"    # Yellow
+color4 = "#3465A4"    # Blue
+color5 = "#75507B"    # Magenta
+color6 = "#06989A"    # Cyan
+color7 = "#D3D7CF"    # White
+color8 = "#555753"    # Bright Black
+color9 = "#EF2929"    # Bright Red
+color10 = "#8AE234"   # Bright Green
+color11 = "#FCE94F"   # Bright Yellow
+color12 = "#729FCF"   # Bright Blue
+color13 = "#AD7FA8"   # Bright Magenta
+color14 = "#34E2E2"   # Bright Cyan
+color15 = "#EEEEEC"   # Bright White
 
 [window]
 # Window opacity (0.0 - 1.0)
 opacity = 1.0
+
+[terminal]
+# Default window size in columns and rows
+cols = 100
+rows = 30
+# Scrollback buffer size (number of lines)
+scrollback = 10000
+# Cursor blinking
+cursor_blink = true
+# Cursor blink interval in milliseconds
+cursor_blink_ms = 500

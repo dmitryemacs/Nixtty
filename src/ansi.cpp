@@ -61,6 +61,7 @@ void AnsiParser::processChar(wchar_t ch) {
             m_currentParam = 0;
             m_hasParam = false;
             m_csiPrivate = false;
+            m_csiIntermediate = 0;
         } else if (ch == L'\r') {
             m_terminal.carriageReturn();
         } else if (ch == L'\n') {
@@ -82,6 +83,7 @@ void AnsiParser::processChar(wchar_t ch) {
             m_currentParam = 0;
             m_hasParam = false;
             m_csiPrivate = false;
+            m_csiIntermediate = 0;
         } else if (ch == L's') {
             m_terminal.saveCursor();
             m_state = STATE_GROUND;
@@ -107,6 +109,9 @@ void AnsiParser::processChar(wchar_t ch) {
             m_state = STATE_GROUND;
         } else if (ch == L'(' || ch == L')') {
             m_state = STATE_ESC_IGNORE;
+        } else if (ch == L'P' || ch == L'X' || ch == L'^' || ch == L'_') {
+            m_state = STATE_DCS;
+            m_sequence.clear();
         } else if (ch >= L'0' && ch <= L'~') {
             m_state = STATE_GROUND;
         } else {
@@ -125,7 +130,9 @@ void AnsiParser::processChar(wchar_t ch) {
         } else if (ch == L'?') {
             m_csiPrivate = true;
         } else if (ch == L'>' || ch == L'=') {
-            // Intermediate byte - ignore and continue
+            m_csiIntermediate = ch;
+        } else if (ch >= L' ' && ch <= L'/') {
+            // Intermediate bytes (space, !, ", #, etc.) - ignore and continue
         } else if (ch >= L'@' && ch <= L'~') {
             if (m_hasParam || !m_params.empty()) {
                 m_params.push_back(m_currentParam);
@@ -134,17 +141,40 @@ void AnsiParser::processChar(wchar_t ch) {
             executeCsi();
             m_state = STATE_GROUND;
             m_csiPrivate = false;
+            m_csiIntermediate = 0;
         } else {
             m_state = STATE_GROUND;
             m_csiPrivate = false;
+            m_csiIntermediate = 0;
         }
         break;
 
     case STATE_OSC:
-        if (ch == L'\x07' || ch == L'\x1b') {
+        if (ch == L'\x07') {
             if (m_sequence.size() > 0) {
                 executeOsc();
             }
+            m_state = STATE_GROUND;
+        } else if (ch == L'\x1b') {
+            m_sequence.push_back(ch);
+        } else if (!m_sequence.empty() && m_sequence.back() == L'\x1b' && ch == L'\\') {
+            m_sequence.pop_back(); // remove the ESC
+            if (m_sequence.size() > 0) {
+                executeOsc();
+            }
+            m_state = STATE_GROUND;
+        } else {
+            m_sequence.push_back(ch);
+        }
+        break;
+
+    case STATE_DCS:
+        if (ch == L'\x07') {
+            m_state = STATE_GROUND;
+        } else if (ch == L'\x1b') {
+            m_sequence.clear();
+            m_sequence.push_back(ch);
+        } else if (!m_sequence.empty() && m_sequence.back() == L'\x1b' && ch == L'\\') {
             m_state = STATE_GROUND;
         } else {
             m_sequence.push_back(ch);
@@ -316,12 +346,32 @@ void AnsiParser::executeCsi() {
         break;
     }
     case L'n': {
-        if (!m_params.empty() && m_params[0] == 6) {
+        if (!m_params.empty() && m_params[0] == 5) {
+            // DSR: terminal OK
+            const char resp[] = "\x1b[0n";
+            writeResponse(resp, sizeof(resp) - 1);
+        } else if (!m_params.empty() && m_params[0] == 6) {
             Cursor cur = m_terminal.getCursor();
             char buf[32];
             int len = snprintf(buf, sizeof(buf), "\x1b[%d;%dR", cur.y + 1, cur.x + 1);
             writeResponse(buf, len);
         }
+        break;
+    }
+    case L'c': {
+        if (m_csiIntermediate == L'>') {
+            // DA2: respond with VT100 terminal type
+            const char resp[] = "\x1b[>0;10;1c";
+            writeResponse(resp, sizeof(resp) - 1);
+        } else if (!m_csiPrivate) {
+            // DA1: respond with VT100 with Advanced Video Option
+            const char resp[] = "\x1b[?1;2c";
+            writeResponse(resp, sizeof(resp) - 1);
+        }
+        break;
+    }
+    case L'q': {
+        // DECSCUSR (cursor shape) - ignore for now
         break;
     }
     }
@@ -403,29 +453,45 @@ void AnsiParser::executeOsc() {
             }
         }
     } else if (cmd == 10 || cmd == 11) {
-        // OSC 10/11: set fg/bg - parse but ignore for now
+        std::wstring payload;
+        if (semi + 1 < seq.size()) {
+            payload = seq.substr(semi + 1);
+        }
+
+        if (!payload.empty() && payload[0] == L'?') {
+            uint32_t color = (cmd == 10)
+                ? m_terminal.getDefaultFg()
+                : m_terminal.getDefaultBg();
+            uint8_t r = (color >> 16) & 0xFF;
+            uint8_t g = (color >> 8) & 0xFF;
+            uint8_t b = color & 0xFF;
+            char buf[48];
+            int len = snprintf(buf, sizeof(buf), "\x1b]%d;rgb:%02x%02x/%02x%02x/%02x%02x\x07",
+                cmd, r, r, g, g, b, b);
+            writeResponse(buf, len);
+        }
     } else if (cmd == 0 || cmd == 2) {
         // Window title - ignored
     }
 }
 
 static uint32_t ANSI_COLORS[] = {
-    0x1A1B26,
-    0xF7768E,
-    0x9ECE6A,
-    0xE0AF68,
-    0x7AA2F7,
-    0xBB9AF7,
-    0x7DCFFF,
-    0xA9B1D6,
-    0x414868,
-    0xF7768E,
-    0x9ECE6A,
-    0xE0AF68,
-    0x7AA2F7,
-    0xBB9AF7,
-    0x7DCFFF,
-    0xC0CAF5,
+    0x000000, //  0: black
+    0xCC0000, //  1: red
+    0x4E9A06, //  2: green
+    0xC4A000, //  3: yellow
+    0x3465A4, //  4: blue
+    0x75507B, //  5: magenta
+    0x06989A, //  6: cyan
+    0xD3D7CF, //  7: white
+    0x555753, //  8: bright black
+    0xEF2929, //  9: bright red
+    0x8AE234, // 10: bright green
+    0xFCE94F, // 11: bright yellow
+    0x729FCF, // 12: bright blue
+    0xAD7FA8, // 13: bright magenta
+    0x34E2E2, // 14: bright cyan
+    0xEEEEEC, // 15: bright white
 };
 
 void AnsiParser::setAnsiColor(int index, uint32_t color) {
@@ -463,6 +529,8 @@ void AnsiParser::executeSgr() {
             m_terminal.setInverse(false);
         } else if (code >= 30 && code <= 37) {
             m_terminal.setFgColor(ANSI_COLORS[code - 30]);
+        } else if (code >= 90 && code <= 97) {
+            m_terminal.setFgColor(ANSI_COLORS[code - 90 + 8]);
         } else if (code == 38) {
             if (i + 1 < m_params.size()) {
                 if (m_params[i + 1] == 5 && i + 2 < m_params.size()) {
@@ -496,6 +564,8 @@ void AnsiParser::executeSgr() {
             m_terminal.setFgColor(m_terminal.getDefaultFg());
         } else if (code >= 40 && code <= 47) {
             m_terminal.setBgColor(ANSI_COLORS[code - 40]);
+        } else if (code >= 100 && code <= 107) {
+            m_terminal.setBgColor(ANSI_COLORS[code - 100 + 8]);
         } else if (code == 48) {
             if (i + 1 < m_params.size()) {
                 if (m_params[i + 1] == 5 && i + 2 < m_params.size()) {

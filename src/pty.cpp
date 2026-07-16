@@ -6,7 +6,6 @@
 Pty::Pty() : m_running(false), m_closing(false) {}
 Pty::~Pty() { 
     close();
-    // Отсоединяем поток если он все еще активен, чтобы избежать use-after-free
     if (m_readThread.joinable()) {
         m_readThread.detach();
     }

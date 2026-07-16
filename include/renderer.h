@@ -65,6 +65,9 @@ public:
     void setFontSize(int size);
     int getFontSize() const { return m_fontSize; }
 
+    void setFontFamily(const std::wstring& family);
+    const std::wstring& getFontFamily() const { return m_fontFamily; }
+
 private:
     Glyph* getGlyph(wchar_t ch);
     Glyph insertGlyph(int glyph_w, int glyph_h, const uint8_t* rgba_data);
@@ -82,6 +85,7 @@ private:
     int m_cellWidth = 0;
     int m_cellHeight = 0;
     int m_fontSize = 16;
+    std::wstring m_fontFamily;
 
     std::vector<Atlas> m_atlases;
     int m_currentAtlas = 0;

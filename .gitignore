@@ -1,12 +1,14 @@
 build/
 build-debug/
 Hack/
+vendor/
 *.exe
 *.o
 *.obj
 *.dll
 *.lib
 *.log
+*.nupkg
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake

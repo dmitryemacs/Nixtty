@@ -30,6 +30,7 @@ private:
         STATE_ESC,
         STATE_CSI,
         STATE_OSC,
+        STATE_DCS,
         STATE_ESC_IGNORE,
     };
     State m_state = STATE_GROUND;
@@ -39,6 +40,7 @@ private:
     int m_currentParam = 0;
     bool m_hasParam = false;
     bool m_csiPrivate = false;
+    wchar_t m_csiIntermediate = 0;
 
     int m_utf8Expected = 0;
     uint32_t m_utf8Codepoint = 0;

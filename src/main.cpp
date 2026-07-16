@@ -16,8 +16,6 @@
 #include "config.h"
 
 static const wchar_t* CLASS_NAME = L"Nixtty";
-static const int DEFAULT_COLS = 100;
-static const int DEFAULT_ROWS = 30;
 
 static std::unique_ptr<Terminal> g_terminal;
 static std::unique_ptr<Renderer> g_renderer;
@@ -247,6 +245,26 @@ static void copySelectionToClipboard() {
     }
 }
 
+static void pasteFromClipboard() {
+    if (OpenClipboard(g_hwnd)) {
+        HGLOBAL hMem = GetClipboardData(CF_UNICODETEXT);
+        if (hMem) {
+            wchar_t* p = (wchar_t*)GlobalLock(hMem);
+            if (p) {
+                if (g_terminal->isBracketedPaste()) {
+                    g_pty->write("\x1b[200~", 6);
+                    writeUtf16String(p, (int)wcslen(p));
+                    g_pty->write("\x1b[201~", 6);
+                } else {
+                    writeUtf16String(p, (int)wcslen(p));
+                }
+                GlobalUnlock(hMem);
+            }
+        }
+        CloseClipboard();
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CLOSE:
@@ -341,7 +359,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             // Draw cursor at its position in the buffer, mapped to screen coordinates
             int cursorScreenY = cur.y + scrollOffset;
-            if (cur.visible && ((GetTickCount() / 500) & 1) == 0 && cursorScreenY >= 0 && cursorScreenY < rows) {
+            bool cursorVisible = g_config.cursorBlink ? ((GetTickCount() / g_config.cursorBlinkMs) & 1) == 0 : true;
+            if (cur.visible && cursorVisible && cursorScreenY >= 0 && cursorScreenY < rows) {
                 g_renderer->drawCursor(cur.x, cursorScreenY, g_renderer->getCellWidth(), g_renderer->getCellHeight(), g_config.cursor);
             }
 
@@ -383,24 +402,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (ctrl && shift && wParam == 'V') {
-            // Paste from clipboard
-            if (OpenClipboard(hwnd)) {
-                HGLOBAL hMem = GetClipboardData(CF_UNICODETEXT);
-                if (hMem) {
-                    wchar_t* p = (wchar_t*)GlobalLock(hMem);
-                    if (p) {
-                        if (g_terminal->isBracketedPaste()) {
-                            g_pty->write("\x1b[200~", 6);
-                            writeUtf16String(p, (int)wcslen(p));
-                            g_pty->write("\x1b[201~", 6);
-                        } else {
-                            writeUtf16String(p, (int)wcslen(p));
-                        }
-                        GlobalUnlock(hMem);
-                    }
-                }
-                CloseClipboard();
-            }
+            pasteFromClipboard();
             return 0;
         }
         if (ctrl && shift && wParam == 'A') {
@@ -690,6 +692,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             sendMouseEvent(cx, cy, 2, 0);
             return 0;
         }
+        if (g_sel.hasSelection()) {
+            copySelectionToClipboard();
+            g_sel.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else {
+            pasteFromClipboard();
+        }
         return 0;
     }
 
@@ -803,7 +812,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     renderer_set_log_file(g_log);
 
     InitializeCriticalSection(&g_lock);
-    g_terminal = std::make_unique<Terminal>(DEFAULT_COLS, DEFAULT_ROWS);
+
+    {
+        wchar_t configPath[MAX_PATH];
+        GetModuleFileNameW(nullptr, configPath, MAX_PATH);
+        wchar_t* sl2 = wcsrchr(configPath, L'\\');
+        if (sl2) { wcscpy(sl2 + 1, L"config.toml"); }
+        if (g_config.loadFromFile("config.toml")) {
+            log("Config loaded\n");
+        } else {
+            log("Config not found, using defaults\n");
+        }
+    }
+
+    g_terminal = std::make_unique<Terminal>(g_config.cols, g_config.rows, g_config.scrollback);
     g_renderer = std::make_unique<Renderer>();
     g_pty = std::make_unique<Pty>();
     g_ansi = std::make_unique<AnsiParser>(*g_terminal);
@@ -838,26 +860,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
 
     {
-        wchar_t configPath[MAX_PATH];
-        GetModuleFileNameW(nullptr, configPath, MAX_PATH);
-        wchar_t* sl2 = wcsrchr(configPath, L'\\');
-        if (sl2) { wcscpy(sl2 + 1, L"config.toml"); }
-        if (g_config.loadFromFile("config.toml")) {
-            log("Config loaded\n");
-        } else {
-            log("Config not found, using defaults\n");
-        }
         g_renderer->setFontSize(g_config.fontSize);
+        if (!g_config.fontFamily.empty()) {
+            g_renderer->setFontFamily(std::wstring(g_config.fontFamily.begin(), g_config.fontFamily.end()));
+        }
         g_terminal->setDefaultColors(g_config.foreground, g_config.background);
         for (int i = 0; i < 16; i++) {
             g_ansi->setAnsiColor(i, g_config.ansiColors[i]);
         }
+
     }
 
     int cw = g_renderer->getCellWidth();
     int ch = g_renderer->getCellHeight();
-    int winW = DEFAULT_COLS * cw + 16;
-    int winH = DEFAULT_ROWS * ch + 39;
+    int winW = g_config.cols * cw + 16;
+    int winH = g_config.rows * ch + 39;
     SetWindowPos(g_hwnd, nullptr, 0, 0, winW, winH, SWP_NOMOVE | SWP_NOZORDER);
 
     log("Setting up PTY callbacks\n");
@@ -899,7 +916,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     updateWindowSize();
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
-    SetTimer(g_hwnd, 1, 500, nullptr);
+    SetTimer(g_hwnd, 1, g_config.cursorBlinkMs, nullptr);
 
     log("Entering message loop\n");
 
